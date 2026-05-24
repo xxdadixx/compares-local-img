@@ -1,10 +1,27 @@
 {
   "manifest_version": 3,
   "name": "Instagram Profile-Specific Matcher",
-  "version": "1.3",
-  "description": "Links specific local image folders to individual Instagram profiles with persistent background state.",
-  "permissions": ["storage", "unlimitedStorage", "activeTab"],
-  "host_permissions": ["https://*.instagram.com/*"],
+  "version": "2.0",
+  "description": "Links specific local image folders to individual Instagram profiles via API background state.",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "activeTab",
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "https://*.instagram.com/*",
+    "https://*.cdninstagram.com/*"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "cors_rules",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
   "background": {
     "service_worker": "background.js"
   },
@@ -14,7 +31,14 @@
   "content_scripts": [
     {
       "matches": ["https://*.instagram.com/*"],
-      "js": ["content.js"]
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["https://*.instagram.com/*"]
     }
   ]
 }

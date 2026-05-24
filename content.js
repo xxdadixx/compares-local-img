@@ -1,4 +1,53 @@
 // content.js
+
+// 1. Script Injection Hook
+try {
+  const script = document.createElement("script");
+  script.src = chrome.runtime.getURL("inject.js");
+  script.onload = () => script.remove();
+  (document.head || document.documentElement).appendChild(script);
+} catch (e) {
+  console.debug("Script injection bypassed context constraints.");
+}
+
+// 2. Cross-Context Message Relay
+window.addEventListener("message", (event) => {
+  if (event.source !== window || !event.data) return;
+  if (event.data.type === "INSTA_API_INTERCEPTED") {
+    if (chrome.runtime?.id) {
+      chrome.runtime.sendMessage({
+        action: "process_api_payload",
+        url: event.data.url,
+        payload: event.data.payload,
+      });
+    }
+  }
+});
+
+// 3. Operational State Caches (Moved up to prevent Temporal Dead Zone crashes)
+let matchedUrlsCache = new Set();
+let unmatchedUrlsCache = new Set();
+let processingUrlsCache = new Set();
+let processedUrlsCache = new Set();
+let totalMatchesFoundCounter = 0;
+
+// 4. MutationObserver & Debouncer Layout (Safely accesses variables above)
+let scrollDebounceTimeout = null;
+const observer = new MutationObserver(() => {
+  if (!chrome.runtime?.id) {
+    observer.disconnect();
+    return;
+  }
+
+  clearTimeout(scrollDebounceTimeout);
+  scrollDebounceTimeout = setTimeout(() => {
+    applyCachedOverlays();
+  }, 400);
+});
+
+observer.observe(document.body, { childList: true, subtree: true });
+
+// 5. Message listener for extension scans
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (!chrome.runtime?.id) return;
 
@@ -20,55 +69,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-let scrollDebounceTimeout = null;
-const observer = new MutationObserver(() => {
-  if (!chrome.runtime?.id) {
-    observer.disconnect();
-    return;
-  }
-
-  clearTimeout(scrollDebounceTimeout);
-  scrollDebounceTimeout = setTimeout(() => {
-    applyCachedOverlays();
-  }, 400);
-});
-
-observer.observe(document.body, { childList: true, subtree: true });
-
-function getPageUsername() {
-  const profileHeaderTitle = document.querySelector(
-    'header h2, header h1, h2[class*="Username"]',
-  );
-  if (profileHeaderTitle && profileHeaderTitle.textContent) {
-    const cleanName = profileHeaderTitle.textContent.trim().split(" ")[0];
-    if (cleanName && cleanName.length > 0) return cleanName;
-  }
-
-  const pathSegments = window.location.pathname
-    .split("/")
-    .filter((segment) => segment.length > 0);
-  const ignoredPaths = [
-    "explore",
-    "p",
-    "stories",
-    "reels",
-    "reel",
-    "direct",
-    "developer",
-    "emails",
-  ];
-  if (pathSegments.length > 0 && !ignoredPaths.includes(pathSegments[0])) {
-    return pathSegments[0];
-  }
-
-  return null;
+/**
+ * NEW BUG FIX: Verifies if a targeted element is inside an active overlay modal viewport.
+ * This keeps extension overlays strictly confined to the main grid collection view.
+ */
+function isInsideModal(element) {
+  return !!element.closest('div[role="dialog"], div[role="presentation"]');
 }
-
-let matchedUrlsCache = new Set();
-let unmatchedUrlsCache = new Set();
-let processingUrlsCache = new Set(); // Track elements currently in processing queue
-let processedUrlsCache = new Set();
-let totalMatchesFoundCounter = 0;
 
 async function matchImages() {
   if (!chrome.runtime?.id) return;
@@ -128,9 +135,10 @@ async function matchImages() {
     for (let loop = 0; loop < maxScrollLoops; loop++) {
       if (!chrome.runtime?.id) break;
 
-      const visibleElements = document.querySelectorAll(
-        'a[href*="/p/"], a[href*="/reel/"]',
-      );
+      // FIX applied here: Ignore post items rendered inside floating preview dialog elements
+      const visibleElements = Array.from(
+        document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
+      ).filter((el) => !isInsideModal(el));
 
       // Phase 1: Set preliminary overlays on newly revealed items
       for (const el of visibleElements) {
@@ -278,9 +286,11 @@ async function matchImages() {
 }
 
 function applyCachedOverlays() {
-  const postContainers = document.querySelectorAll(
-    'a[href*="/p/"], a[href*="/reel/"]',
-  );
+  // FIX applied here: Mutation observer overlay cycles are kept out of active post modals
+  const postContainers = Array.from(
+    document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
+  ).filter((el) => !isInsideModal(el));
+
   postContainers.forEach((container) => {
     const urlPath = container.getAttribute("href") || "";
     const segments = urlPath.split("/").filter(Boolean);
@@ -302,7 +312,6 @@ function applyCachedOverlays() {
 
 function convertUrlToColorProfile(url) {
   return new Promise((resolve, reject) => {
-    // FIX: Enforce string type validation and clean potential execution protocol anomalies
     if (!url || typeof url !== "string") {
       return reject(new Error("Invalid target image reference URL."));
     }
@@ -343,78 +352,71 @@ function isProfileSimilar(profile1, profile2) {
 }
 
 function updateOrCreateOverlay(containerElement, text, statusType) {
-    // Establish parent positioning context boundaries
-    containerElement.style.position = "relative";
-    
-    // FIX: Collect all potential duplicates that accumulated due to DOM recycling
-    const existingBadges = containerElement.querySelectorAll(".insta-match-badge");
-    let overlay = null;
-  
-    if (existingBadges.length > 0) {
-      // Keep the first existing instance as our singular UI handle
-      overlay = existingBadges[0];
-      // Evict all overlapping duplicates cleanly from the container link frame
-      for (let i = 1; i < existingBadges.length; i++) {
-        existingBadges[i].remove();
-      }
-    } else {
-      // Standard instantiation step if no badge exists yet
-      overlay = document.createElement("div");
-      overlay.className = "insta-match-badge";
-      containerElement.appendChild(overlay);
+  containerElement.style.position = "relative";
+
+  const existingBadges =
+    containerElement.querySelectorAll(".insta-match-badge");
+  let overlay = null;
+
+  if (existingBadges.length > 0) {
+    overlay = existingBadges[0];
+    for (let i = 1; i < existingBadges.length; i++) {
+      existingBadges[i].remove();
     }
-  
-    // Apple Theme Configuration Model Maps
-    let displayConfig = {
-      text: "⋯ Processing",
-      bg: "rgba(255, 255, 255, 0.7)",
-      border: "rgba(255, 255, 255, 0.4)",
-      color: "#1d1d1f"
-    };
-  
-    if (text.includes("MATCHED")) {
-      displayConfig = {
-        text: "✓ Matched",
-        bg: "rgba(52, 199, 89, 0.25)",      // Apple Premium Eco Green
-        border: "rgba(52, 199, 89, 0.4)",
-        color: "#248a3d"
-      };
-    } else if (text.includes("NO MATCH")) {
-      displayConfig = {
-        text: "✕ Unmatched",
-        bg: "rgba(255, 59, 48, 0.18)",       // Apple Translucent Red
-        border: "rgba(255, 59, 48, 0.35)",
-        color: "#ff3b30"
-      };
-    }
-  
-    // Update typography text content without generating structural mutation thrashing
-    if (overlay.innerText !== displayConfig.text) {
-      overlay.innerText = displayConfig.text;
-    }
-  
-    // Enforce hardware styles explicitly to overwrite overlapping layouts
-    Object.assign(overlay.style, {
-      position: "absolute",
-      bottom: "10px",
-      right: "10px",
-      backgroundColor: displayConfig.bg,
-      color: displayConfig.color,
-      border: `1px solid ${displayConfig.border}`,
-      backdropFilter: "blur(16px) saturate(140%)", 
-      webkitBackdropFilter: "blur(16px) saturate(140%)",
-      padding: "4px 10px",
-      borderRadius: "20px",
-      fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
-      fontSize: "11px",
-      fontWeight: "600",
-      letterSpacing: "-0.1px",                      
-      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.06)",  
-      zIndex: "99",
-      pointerEvents: "none",
-      display: "flex",
-      alignItems: "center",
-      gap: "4px",
-      transition: "all 0.3s cubic-bezier(0.25, 1, 0.5, 1)"
-    });
+  } else {
+    overlay = document.createElement("div");
+    overlay.className = "insta-match-badge";
+    containerElement.appendChild(overlay);
   }
+
+  let displayConfig = {
+    text: "⋯ Processing",
+    bg: "rgba(255, 255, 255, 0.7)",
+    border: "rgba(255, 255, 255, 0.4)",
+    color: "#1d1d1f",
+  };
+
+  if (text.includes("MATCHED")) {
+    displayConfig = {
+      text: "✓ Matched",
+      bg: "rgba(52, 199, 89, 0.25)",
+      border: "rgba(52, 199, 89, 0.4)",
+      color: "#248a3d",
+    };
+  } else if (text.includes("NO MATCH")) {
+    displayConfig = {
+      text: "✕ Unmatched",
+      bg: "rgba(255, 59, 48, 0.18)",
+      border: "rgba(255, 59, 48, 0.35)",
+      color: "#ff3b30",
+    };
+  }
+
+  if (overlay.innerText !== displayConfig.text) {
+    overlay.innerText = displayConfig.text;
+  }
+
+  Object.assign(overlay.style, {
+    position: "absolute",
+    bottom: "10px",
+    right: "10px",
+    backgroundColor: displayConfig.bg,
+    color: displayConfig.color,
+    border: `1px solid ${displayConfig.border}`,
+    backdropFilter: "blur(16px) saturate(140%)",
+    webkitBackdropFilter: "blur(16px) saturate(140%)",
+    padding: "4px 10px",
+    borderRadius: "20px",
+    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
+    fontSize: "11px",
+    fontWeight: "600",
+    letterSpacing: "-0.1px",
+    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.06)",
+    zIndex: "99",
+    pointerEvents: "none",
+    display: "flex",
+    alignItems: "center",
+    gap: "4px",
+    transition: "all 0.3s cubic-bezier(0.25, 1, 0.5, 1)",
+  });
+}
