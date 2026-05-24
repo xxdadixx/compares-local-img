@@ -1,4 +1,52 @@
+// popup.js
 let detectedUsername = null;
+
+// Helper to safely restore current layout states on initialization
+function restoreScanState() {
+  const statusDiv = document.getElementById("status");
+  const progContainer = document.getElementById("progressContainer");
+  const progBar = document.getElementById("progressBar");
+  const progText = document.getElementById("progressText");
+  const syncBtn = document.getElementById("syncBtn");
+
+  chrome.storage.local.get(["is_scanning_active", "scan_state"], (data) => {
+    if (!data.scan_state || data.scan_state.status === "idle") return;
+
+    const state = data.scan_state;
+
+    if (data.is_scanning_active && state.status === "starting") {
+      statusDiv.style.color = "#8e8e8e";
+      statusDiv.innerText = "Initializing scan pipeline...";
+      if (progContainer) progContainer.style.display = "block";
+      if (progBar) progBar.style.width = "0%";
+      if (progText) progText.innerText = "Connecting...";
+      if (syncBtn) syncBtn.disabled = true;
+    } else if (state.status === "progress") {
+      statusDiv.style.color = "#8e8e8e";
+      statusDiv.innerText = state.log || "Scanning...";
+      if (progContainer) progContainer.style.display = "block";
+      if (progBar && progText) {
+        const percentage =
+          state.total > 0 ? (state.current / state.total) * 100 : 0;
+        progBar.style.width = `${percentage}%`;
+        progText.innerText = `${state.current} / ${state.total}`;
+      }
+      if (syncBtn) syncBtn.disabled = true;
+    } else if (state.status === "complete") {
+      statusDiv.style.color = "#0095f6";
+      statusDiv.innerText = `Scan complete! Marked ${state.matchesFound} matched posts.`;
+      if (progContainer) progContainer.style.display = "block";
+      if (progBar) progBar.style.width = "100%";
+      if (progText) {
+        progText.style.display = "block";
+        progText.innerText = "Finished";
+      }
+    } else if (state.status === "error") {
+      statusDiv.style.color = "#ed4956";
+      statusDiv.innerText = `Error: ${state.message}`;
+    }
+  });
+}
 
 // Check if active tab is on Instagram and enable controls
 chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -30,14 +78,16 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     } catch (e) {
       targetProfileDiv.innerText = "Ready to Scan";
     }
+
+    // Restore persistent states immediately after verifying layout environment context
+    restoreScanState();
   } else {
     targetProfileDiv.style.color = "#ed4956";
     targetProfileDiv.innerText = "Please navigate to an Instagram Profile";
   }
 });
 
-// NEW: Listen for folder selection, process image matrices, and store data
-// Listen for folder selection, process image matrices, and animate progress track
+// Listen for folder selection, process image matrices, and store data
 document
   .getElementById("imageInput")
   .addEventListener("change", async (event) => {
@@ -57,7 +107,6 @@ document
     );
     if (files.length === 0) return;
 
-    // Initialize and display progress animation properties for loading phase
     statusDiv.style.color = "#86868b";
     statusDiv.innerText = `Synchronizing assets...`;
 
@@ -79,7 +128,6 @@ document
         console.error("Failed to parse local file: ", file.name, err);
       }
 
-      // Advance real-time progress layout animations incrementally
       currentFileIndex++;
       if (progBar) {
         const percentage = (currentFileIndex / files.length) * 100;
@@ -92,10 +140,9 @@ document
 
     const storageKey = `insta_profile_${detectedUsername}`;
     chrome.storage.local.set({ [storageKey]: processedProfiles }, () => {
-      statusDiv.style.color = "#34c759"; // Premium Success Green
+      statusDiv.style.color = "#34c759";
       statusDiv.innerText = `Folder loaded! Saved ${processedProfiles.length} image signatures.`;
 
-      // Smoothly hide tracking display window after operations finish successfully
       setTimeout(() => {
         if (progContainer) progContainer.style.display = "none";
         if (progText) progText.style.display = "none";
@@ -103,7 +150,6 @@ document
     });
   });
 
-// Helper to convert an uploaded local file object to a 10x10 data array
 function generateColorProfileFromFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -135,6 +181,7 @@ document.getElementById("syncBtn").addEventListener("click", () => {
   const progContainer = document.getElementById("progressContainer");
   const progBar = document.getElementById("progressBar");
   const progText = document.getElementById("progressText");
+  const syncBtn = document.getElementById("syncBtn");
 
   statusDiv.style.color = "#8e8e8e";
   statusDiv.innerText = "Initializing scan pipeline...";
@@ -142,6 +189,7 @@ document.getElementById("syncBtn").addEventListener("click", () => {
   if (progContainer) progContainer.style.display = "block";
   if (progBar) progBar.style.width = "0%";
   if (progText) progText.innerText = "Connecting...";
+  if (syncBtn) syncBtn.disabled = true;
 
   chrome.storage.local.set(
     { is_scanning_active: true, scan_state: { status: "starting" } },
@@ -151,7 +199,11 @@ document.getElementById("syncBtn").addEventListener("click", () => {
           statusDiv.style.color = "#ed4956";
           statusDiv.innerText = "Error: No active tab found.";
           if (progContainer) progContainer.style.display = "none";
-          chrome.storage.local.set({ is_scanning_active: false });
+          if (syncBtn) syncBtn.disabled = false;
+          chrome.storage.local.set({
+            is_scanning_active: false,
+            scan_state: { status: "idle" },
+          });
           return;
         }
 
@@ -175,30 +227,42 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName === "local" && changes.scan_state?.newValue) {
     const state = changes.scan_state.newValue;
     const statusDiv = document.getElementById("status");
+    const progContainer = document.getElementById("progressContainer");
     const progBar = document.getElementById("progressBar");
     const progText = document.getElementById("progressText");
+    const syncBtn = document.getElementById("syncBtn");
 
     if (!statusDiv) return;
 
     if (state.status === "progress") {
       statusDiv.style.color = "#8e8e8e";
       statusDiv.innerText = state.log || "Scanning...";
+      if (progContainer) progContainer.style.display = "block";
       if (progBar && progText) {
         const percentage =
           state.total > 0 ? (state.current / state.total) * 100 : 0;
         progBar.style.width = `${percentage}%`;
         progText.innerText = `${state.current} / ${state.total}`;
       }
+      if (syncBtn) syncBtn.disabled = true;
     } else if (state.status === "complete") {
       statusDiv.style.color = "#0095f6";
       statusDiv.innerText = `Scan complete! Marked ${state.matchesFound} matched posts.`;
       if (progBar) progBar.style.width = "100%";
-      if (progText) progText.innerText = "Finished";
+      if (progText) {
+        progText.style.display = "block";
+        progText.innerText = "Finished";
+      }
+      if (syncBtn) syncBtn.disabled = false;
     } else if (state.status === "error") {
       statusDiv.style.color = "#ed4956";
       statusDiv.innerText = `Error: ${state.message}`;
       if (progBar) progBar.style.width = "0%";
-      if (progText) progText.innerText = "Failed";
+      if (progText) {
+        progText.style.display = "block";
+        progText.innerText = "Failed";
+      }
+      if (syncBtn) syncBtn.disabled = false;
     }
   }
 });

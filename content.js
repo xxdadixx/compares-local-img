@@ -24,14 +24,14 @@ window.addEventListener("message", (event) => {
   }
 });
 
-// 3. Operational State Caches (Moved up to prevent Temporal Dead Zone crashes)
+// 3. Operational State Caches
 let matchedUrlsCache = new Set();
 let unmatchedUrlsCache = new Set();
 let processingUrlsCache = new Set();
 let processedUrlsCache = new Set();
 let totalMatchesFoundCounter = 0;
 
-// 4. MutationObserver & Debouncer Layout (Safely accesses variables above)
+// 4. MutationObserver & Debouncer Layout (Safely watches root node)
 let scrollDebounceTimeout = null;
 const observer = new MutationObserver(() => {
   if (!chrome.runtime?.id) {
@@ -45,7 +45,16 @@ const observer = new MutationObserver(() => {
   }, 400);
 });
 
-observer.observe(document.body, { childList: true, subtree: true });
+if (document.documentElement) {
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
+} else {
+  window.addEventListener("DOMContentLoaded", () => {
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+}
 
 // 5. Message listener for extension scans
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -70,7 +79,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 /**
- * NEW BUG FIX: Verifies if a targeted element is inside an active overlay modal viewport.
+ * FIXED: Restored getPageUsername function mapping
+ * Extracts the user profile slug cleanly from headings or browser route patterns.
+ */
+function getPageUsername() {
+  const profileHeaderTitle = document.querySelector(
+    'header h2, header h1, h2[class*="Username"]',
+  );
+  if (profileHeaderTitle && profileHeaderTitle.textContent) {
+    const cleanName = profileHeaderTitle.textContent.trim().split(" ")[0];
+    if (cleanName && cleanName.length > 0) return cleanName;
+  }
+
+  const pathSegments = window.location.pathname
+    .split("/")
+    .filter((segment) => segment.length > 0);
+  const ignoredPaths = [
+    "explore",
+    "p",
+    "stories",
+    "reels",
+    "reel",
+    "direct",
+    "developer",
+    "emails",
+  ];
+  if (pathSegments.length > 0 && !ignoredPaths.includes(pathSegments[0])) {
+    return pathSegments[0];
+  }
+
+  return null;
+}
+
+/**
+ * Verifies if a targeted element is inside an active overlay modal viewport.
  * This keeps extension overlays strictly confined to the main grid collection view.
  */
 function isInsideModal(element) {
@@ -129,13 +171,11 @@ async function matchImages() {
     let consecutiveHeightMatches = 0;
     let lastScrollHeight = 0;
 
-    // Guard parameter ensuring protection against endless background loops
     const maxScrollLoops = 150;
 
     for (let loop = 0; loop < maxScrollLoops; loop++) {
       if (!chrome.runtime?.id) break;
 
-      // FIX applied here: Ignore post items rendered inside floating preview dialog elements
       const visibleElements = Array.from(
         document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
       ).filter((el) => !isInsideModal(el));
@@ -218,12 +258,10 @@ async function matchImages() {
 
       applyCachedOverlays();
 
-      // Tracking state updates to prevent early extraction failures
       const currentScrollHeight = document.body.scrollHeight;
       const currentProcessedCount = processedUrlsCache.size;
 
       if (currentProcessedCount > lastProcessedCount) {
-        // Items are being scanned normally. Reset failure monitors.
         noNewItemsCount = 0;
         consecutiveHeightMatches = 0;
       } else {
@@ -235,9 +273,7 @@ async function matchImages() {
         }
       }
 
-      // Check if we reached the absolute profile footer boundary safely
       if (noNewItemsCount >= 4 || consecutiveHeightMatches >= 3) {
-        // Wait one final time with a fallback window to accommodate lazy network elements
         window.scrollTo(0, document.body.scrollHeight);
         await new Promise((res) => setTimeout(res, 2200));
 
@@ -245,22 +281,19 @@ async function matchImages() {
           processedUrlsCache.size === currentProcessedCount &&
           document.body.scrollHeight === currentScrollHeight
         ) {
-          break; // Confirmed: Profile has completely finished loading
+          break;
         }
       }
 
       lastProcessedCount = currentProcessedCount;
       lastScrollHeight = currentScrollHeight;
 
-      // Scroll smoothly down the feed
       window.scrollTo(0, document.body.scrollHeight);
 
-      // Variable Adaptive Stabilization Delay (reduces lag by relaxing page rendering cycles)
       const dynamicDelay = consecutiveHeightMatches > 0 ? 1600 : 1250;
       await new Promise((resolve) => setTimeout(resolve, dynamicDelay));
     }
 
-    // Scroll back to peak cleanly
     window.scrollTo({ top: 0, behavior: "smooth" });
 
     if (chrome.runtime?.id) {
@@ -286,7 +319,6 @@ async function matchImages() {
 }
 
 function applyCachedOverlays() {
-  // FIX applied here: Mutation observer overlay cycles are kept out of active post modals
   const postContainers = Array.from(
     document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
   ).filter((el) => !isInsideModal(el));
