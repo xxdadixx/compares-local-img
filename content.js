@@ -63,14 +63,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === "scan_instagram") {
     sendResponse({ status: "acknowledged" });
 
-    matchImages().catch((error) => {
-      if (chrome.runtime?.id) {
+    const assignedTabId = request.tabId;
+
+    matchImages(assignedTabId).catch((error) => {
+      if (chrome.runtime?.id && assignedTabId) {
         chrome.storage.local.set({
-          scan_state: {
+          [`scan_state_${assignedTabId}`]: {
             status: "error",
             message: error.message || "Scan failed unexpectedly.",
           },
-          is_scanning_active: false,
+          [`is_scanning_active_${assignedTabId}`]: false,
         });
       }
     });
@@ -78,10 +80,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-/**
- * FIXED: Restored getPageUsername function mapping
- * Extracts the user profile slug cleanly from headings or browser route patterns.
- */
 function getPageUsername() {
   const profileHeaderTitle = document.querySelector(
     'header h2, header h1, h2[class*="Username"]',
@@ -111,30 +109,27 @@ function getPageUsername() {
   return null;
 }
 
-/**
- * Verifies if a targeted element is inside an active overlay modal viewport.
- * This keeps extension overlays strictly confined to the main grid collection view.
- */
 function isInsideModal(element) {
   return !!element.closest('div[role="dialog"], div[role="presentation"]');
 }
 
-async function matchImages() {
+async function matchImages(tabId) {
   if (!chrome.runtime?.id) return;
 
   const currentUsername = getPageUsername();
   if (!currentUsername) {
-    chrome.storage.local.set({
-      scan_state: {
-        status: "error",
-        message: "Not on a valid user profile page.",
-      },
-      is_scanning_active: false,
-    });
+    if (tabId) {
+      chrome.storage.local.set({
+        [`scan_state_${tabId}`]: {
+          status: "error",
+          message: "Not on a valid user profile page.",
+        },
+        [`is_scanning_active_${tabId}`]: false,
+      });
+    }
     return;
   }
 
-  // Clear operational states cleanly
   matchedUrlsCache.clear();
   unmatchedUrlsCache.clear();
   processedUrlsCache.clear();
@@ -156,13 +151,15 @@ async function matchImages() {
     const localProfiles = data[storageKey] || [];
 
     if (localProfiles.length === 0) {
-      chrome.storage.local.set({
-        scan_state: {
-          status: "error",
-          message: "No local image folder loaded for this user yet.",
-        },
-        is_scanning_active: false,
-      });
+      if (tabId) {
+        chrome.storage.local.set({
+          [`scan_state_${tabId}`]: {
+            status: "error",
+            message: "No local image folder loaded for this user yet.",
+          },
+          [`is_scanning_active_${tabId}`]: false,
+        });
+      }
       return;
     }
 
@@ -170,7 +167,6 @@ async function matchImages() {
     let noNewItemsCount = 0;
     let consecutiveHeightMatches = 0;
     let lastScrollHeight = 0;
-
     const maxScrollLoops = 150;
 
     for (let loop = 0; loop < maxScrollLoops; loop++) {
@@ -180,7 +176,6 @@ async function matchImages() {
         document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
       ).filter((el) => !isInsideModal(el));
 
-      // Phase 1: Set preliminary overlays on newly revealed items
       for (const el of visibleElements) {
         const href = el.getAttribute("href") || "";
         const segments = href.split("/").filter(Boolean);
@@ -200,9 +195,7 @@ async function matchImages() {
         }
       }
 
-      // Phase 2: Matrix comparison execution
       for (const el of visibleElements) {
-        const img = el.querySelector("img");
         const href = el.getAttribute("href") || "";
         const segments = href.split("/").filter(Boolean);
         const shortcode =
@@ -210,49 +203,60 @@ async function matchImages() {
             ? segments[2]
             : segments[1];
 
-        if (
-          shortcode &&
-          img &&
-          img.src &&
-          !img.src.startsWith("blob:") &&
-          !processedUrlsCache.has(shortcode)
-        ) {
-          chrome.storage.local.set({
-            scan_state: {
-              status: "progress",
-              current: processedUrlsCache.size + 1,
-              total: Math.max(
-                visibleElements.length,
-                processedUrlsCache.size + 1,
-              ),
-              log: `Processing layouts: evaluating item ${processedUrlsCache.size + 1}...`,
-            },
-          });
+        if (shortcode && !processedUrlsCache.has(shortcode)) {
+          // FIXED: Select all available images inside the item container (handles Carousels)
+          const imgs = Array.from(el.querySelectorAll("img")).filter(
+            (img) => img.src && !img.src.startsWith("blob:"),
+          );
 
-          try {
-            const instaProfile = await convertUrlToColorProfile(img.src);
-            const matchFound = localProfiles.some((localProfile) =>
-              isProfileSimilar(localProfile, instaProfile),
-            );
+          if (imgs.length === 0) continue;
 
-            if (typeof processingUrlsCache !== "undefined")
-              processingUrlsCache.delete(shortcode);
-            processedUrlsCache.add(shortcode);
-
-            if (matchFound) {
-              matchedUrlsCache.add(shortcode);
-              totalMatchesFoundCounter++;
-              updateOrCreateOverlay(el, "💾 MATCHED", "#0095f6");
-            } else {
-              unmatchedUrlsCache.add(shortcode);
-              updateOrCreateOverlay(el, "❌ NO MATCH", "rgba(38, 38, 38, 0.7)");
-            }
-            el.classList.add("processed-by-ext");
-          } catch (e) {
-            if (typeof processingUrlsCache !== "undefined")
-              processingUrlsCache.delete(shortcode);
-            console.debug("Skipped unreadable asset payload block.");
+          if (tabId) {
+            chrome.storage.local.set({
+              [`scan_state_${tabId}`]: {
+                status: "progress",
+                current: processedUrlsCache.size + 1,
+                total: Math.max(
+                  visibleElements.length,
+                  processedUrlsCache.size + 1,
+                ),
+                log: `Processing layouts: evaluating item ${processedUrlsCache.size + 1}...`,
+              },
+            });
           }
+
+          let matchFound = false;
+
+          // Process all discovered slide images inside the post card
+          for (const img of imgs) {
+            try {
+              const instaProfile = await convertUrlToColorProfile(img.src);
+              const isImgMatched = localProfiles.some((localProfile) =>
+                isProfileSimilar(localProfile, instaProfile),
+              );
+
+              if (isImgMatched) {
+                matchFound = true;
+                break; // One match inside the carousel is enough to flag the post
+              }
+            } catch (e) {
+              console.debug("Skipped unreadable asset slide.");
+            }
+          }
+
+          if (typeof processingUrlsCache !== "undefined")
+            processingUrlsCache.delete(shortcode);
+          processedUrlsCache.add(shortcode);
+
+          if (matchFound) {
+            matchedUrlsCache.add(shortcode);
+            totalMatchesFoundCounter++;
+            updateOrCreateOverlay(el, "💾 MATCHED", "#0095f6");
+          } else {
+            unmatchedUrlsCache.add(shortcode);
+            updateOrCreateOverlay(el, "❌ NO MATCH", "rgba(38, 38, 38, 0.7)");
+          }
+          el.classList.add("processed-by-ext");
         }
       }
 
@@ -296,23 +300,23 @@ async function matchImages() {
 
     window.scrollTo({ top: 0, behavior: "smooth" });
 
-    if (chrome.runtime?.id) {
+    if (chrome.runtime?.id && tabId) {
       chrome.storage.local.set({
-        scan_state: {
+        [`scan_state_${tabId}`]: {
           status: "complete",
           matchesFound: totalMatchesFoundCounter,
         },
-        is_scanning_active: false,
+        [`is_scanning_active_${tabId}`]: false,
       });
     }
   } catch (err) {
-    if (chrome.runtime?.id) {
+    if (chrome.runtime?.id && tabId) {
       chrome.storage.local.set({
-        scan_state: {
+        [`scan_state_${tabId}`]: {
           status: "error",
           message: "Scan pipeline processing interrupted.",
         },
-        is_scanning_active: false,
+        [`is_scanning_active_${tabId}`]: false,
       });
     }
   }
@@ -350,7 +354,11 @@ function convertUrlToColorProfile(url) {
 
     const img = new Image();
     img.crossOrigin = "Anonymous";
-    img.src = url;
+
+    // FIXED: Appends a cache-busting timestamp parameter to bypass restrictive
+    // browser cache-serves, making sure declarative net rules append CORS successfully.
+    const separator = url.includes("?") ? "&" : "?";
+    img.src = `${url}${separator}ext_cb=${Date.now()}`;
 
     img.onload = () => {
       const canvas = document.createElement("canvas");

@@ -1,20 +1,28 @@
 // popup.js
 let detectedUsername = null;
+let currentTabId = null; // Track current tab id
 
 // Helper to safely restore current layout states on initialization
 function restoreScanState() {
+  if (!currentTabId) return; // Ensure we have a tab ID before checking state
+
   const statusDiv = document.getElementById("status");
   const progContainer = document.getElementById("progressContainer");
   const progBar = document.getElementById("progressBar");
   const progText = document.getElementById("progressText");
   const syncBtn = document.getElementById("syncBtn");
 
-  chrome.storage.local.get(["is_scanning_active", "scan_state"], (data) => {
-    if (!data.scan_state || data.scan_state.status === "idle") return;
+  // Scope keys with currentTabId to prevent cross-tab bleeding
+  const activeKey = `is_scanning_active_${currentTabId}`;
+  const stateKey = `scan_state_${currentTabId}`;
 
-    const state = data.scan_state;
+  chrome.storage.local.get([activeKey, stateKey], (data) => {
+    const isScanningActive = data[activeKey];
+    const state = data[stateKey];
 
-    if (data.is_scanning_active && state.status === "starting") {
+    if (!state || state.status === "idle") return;
+
+    if (isScanningActive && state.status === "starting") {
       statusDiv.style.color = "#8e8e8e";
       statusDiv.innerText = "Initializing scan pipeline...";
       if (progContainer) progContainer.style.display = "block";
@@ -60,6 +68,7 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     currentTab.url &&
     currentTab.url.includes("instagram.com")
   ) {
+    currentTabId = currentTab.id; // Store tab ID dynamically
     if (imageInput) imageInput.disabled = false;
     if (syncBtn) syncBtn.disabled = false;
 
@@ -191,8 +200,13 @@ document.getElementById("syncBtn").addEventListener("click", () => {
   if (progText) progText.innerText = "Connecting...";
   if (syncBtn) syncBtn.disabled = true;
 
+  if (!currentTabId) return;
+
+  const activeKey = `is_scanning_active_${currentTabId}`;
+  const stateKey = `scan_state_${currentTabId}`;
+
   chrome.storage.local.set(
-    { is_scanning_active: true, scan_state: { status: "starting" } },
+    { [activeKey]: true, [stateKey]: { status: "starting" } },
     () => {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (!tabs[0] || !tabs[0].id) {
@@ -201,15 +215,16 @@ document.getElementById("syncBtn").addEventListener("click", () => {
           if (progContainer) progContainer.style.display = "none";
           if (syncBtn) syncBtn.disabled = false;
           chrome.storage.local.set({
-            is_scanning_active: false,
-            scan_state: { status: "idle" },
+            [activeKey]: false,
+            [stateKey]: { status: "idle" },
           });
           return;
         }
 
+        // Pass tabId explicitly inside the message payload
         chrome.tabs.sendMessage(
           tabs[0].id,
-          { action: "scan_instagram" },
+          { action: "scan_instagram", tabId: tabs[0].id },
           (response) => {
             if (chrome.runtime.lastError) {
               console.debug(
@@ -224,8 +239,12 @@ document.getElementById("syncBtn").addEventListener("click", () => {
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  if (areaName === "local" && changes.scan_state?.newValue) {
-    const state = changes.scan_state.newValue;
+  if (!currentTabId || areaName !== "local") return;
+
+  const targetStateKey = `scan_state_${currentTabId}`;
+
+  if (changes[targetStateKey]?.newValue) {
+    const state = changes[targetStateKey].newValue;
     const statusDiv = document.getElementById("status");
     const progContainer = document.getElementById("progressContainer");
     const progBar = document.getElementById("progressBar");
