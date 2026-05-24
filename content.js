@@ -52,85 +52,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   
   let matchedUrlsCache = new Set();
   let unmatchedUrlsCache = new Set();
+  let processedUrlsCache = new Set(); // Tracks historical unique shortcodes to prevent re-processing
   let totalMatchesFoundCounter = 0;
   
-  // NEW: Robust, pagination-aware collection loop matching reference extension architecture
-  async function extractAllPostsImmediately(username) {
-    const postsMap = new Map();
-  
-    try {
-      // Phase 1: Retrieve basic parameters and the primary timeline page
-      const baseInfoUrl = `https://www.instagram.com/${username}/?__a=1&__d=dis`;
-      const baseResponse = await fetch(baseInfoUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-      
-      if (baseResponse.ok) {
-        const baseJson = await baseResponse.json();
-        const userObj = baseJson.graphql?.user || baseJson.data?.user;
-        
-        if (userObj) {
-          const userId = userObj.id;
-          let timelineMedia = userObj.edge_owner_to_timeline_media;
-          
-          // Process the first set of items returned by the profile page initialization
-          if (timelineMedia && timelineMedia.edges) {
-            timelineMedia.edges.forEach(edge => {
-              if (edge.node && edge.node.shortcode && edge.node.display_url) {
-                postsMap.set(edge.node.shortcode, { shortcode: edge.node.shortcode, display_url: edge.node.display_url });
-              }
-            });
-  
-            // Phase 2: Follow pagination cursors sequentially to load next sets of items (up to 3 batches/approx 50 posts)
-            let pageInfo = timelineMedia.page_info;
-            let iterations = 0;
-  
-            while (pageInfo && pageInfo.has_next_page && pageInfo.end_cursor && iterations < 3) {
-              iterations++;
-              const nextQueryId = "8255288477873205"; // Verified operational profile feed query hash template
-              const variables = encodeURIComponent(JSON.stringify({ id: userId, first: 12, after: pageInfo.end_cursor }));
-              const nextUrl = `https://www.instagram.com/graphql/query/?query_doc_id=${nextQueryId}&variables=${variables}`;
-              
-              const nextResponse = await fetch(nextUrl, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
-              if (!nextResponse.ok) break;
-  
-              const nextData = await nextResponse.json();
-              const currentMediaGroup = nextData.data?.user?.edge_owner_to_timeline_media;
-              if (!currentMediaGroup || !currentMediaGroup.edges) break;
-  
-              currentMediaGroup.edges.forEach(edge => {
-                if (edge.node && edge.node.shortcode && edge.node.display_url) {
-                  postsMap.set(edge.node.shortcode, { shortcode: edge.node.shortcode, display_url: edge.node.display_url });
-                }
-              });
-  
-              pageInfo = currentMediaGroup.page_info;
-              // Short stabilization pause to respect platform rate constraints
-              await new Promise(resolve => setTimeout(resolve, 300));
-            }
-          }
-        }
-      }
-    } catch (err) {
-      console.debug("Data API pipeline throttled. Using local DOM parse trace safety fallback.", err);
-    }
-  
-    // FALLBACK ACCELERATION PATHWAY: Scrape visible page frames to merge any missed layout items
-    const elements = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
-    elements.forEach((el) => {
-      const img = el.querySelector("img");
-      const href = el.getAttribute("href") || "";
-      const segments = href.split("/").filter(Boolean);
-      const shortcode = segments[1] === "p" || segments[1] === "reel" ? segments[2] : segments[1];
-      
-      if (img && img.src && shortcode && !img.src.startsWith("blob:")) {
-        if (!postsMap.has(shortcode)) {
-          postsMap.set(shortcode, { shortcode: shortcode, display_url: img.src });
-        }
-      }
-    });
-  
-    return Array.from(postsMap.values());
-  }
-  
+  /**
+   * FIXED: High-performance, synchronized loop that extracts, processes, 
+   * and applies image badges instantly before the DOM can unmount them.
+   */
   async function matchImages() {
     if (!chrome.runtime?.id) return;
   
@@ -143,8 +71,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return;
     }
   
+    // Reset tracking states cleanly
     matchedUrlsCache.clear();
     unmatchedUrlsCache.clear();
+    processedUrlsCache.clear();
     totalMatchesFoundCounter = 0;
     document.querySelectorAll(".processed-by-ext").forEach((el) => el.classList.remove("processed-by-ext"));
     document.querySelectorAll(".insta-match-badge").forEach((badge) => badge.remove());
@@ -162,46 +92,71 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return;
       }
   
-      const profilePosts = await extractAllPostsImmediately(currentUsername);
+      let lastScrollHeight = 0;
+      let noChangeCount = 0;
+      const maxScrollAttempts = 35; // Extends structural scanning depth
   
-      if (profilePosts.length === 0) {
-        chrome.storage.local.set({
-          scan_state: { status: "error", message: "No structural posts visible. Try reloading the profile." },
-          is_scanning_active: false,
-        });
-        return;
-      }
-  
-      let processedCount = 0;
-      for (const post of profilePosts) {
-        processedCount++;
+      for (let i = 0; i < maxScrollAttempts; i++) {
         if (!chrome.runtime?.id) break;
   
-        chrome.storage.local.set({
-          scan_state: {
-            status: "progress",
-            current: processedCount,
-            total: profilePosts.length,
-            log: `Analyzing post metadata ${processedCount} of ${profilePosts.length}...`
-          }
-        });
+        // Find all target containers currently available in the active DOM frame
+        const visibleElements = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
+        
+        // Process newly rendered items immediately on this viewport frame
+        for (const el of visibleElements) {
+          const img = el.querySelector("img");
+          const href = el.getAttribute("href") || "";
+          const segments = href.split("/").filter(Boolean);
+          const shortcode = segments[1] === "p" || segments[1] === "reel" ? segments[2] : segments[1];
   
-        try {
-          const instaProfile = await convertUrlToColorProfile(post.display_url);
-          const matchFound = localProfiles.some((localProfile) => isProfileSimilar(localProfile, instaProfile));
+          if (shortcode && img && img.src && !img.src.startsWith("blob:") && !processedUrlsCache.has(shortcode)) {
+            processedUrlsCache.add(shortcode);
   
-          if (matchFound) {
-            matchedUrlsCache.add(post.shortcode);
-            totalMatchesFoundCounter++;
-          } else {
-            unmatchedUrlsCache.add(post.shortcode);
+            // Update popup pipeline telemetry details smoothly
+            chrome.storage.local.set({
+              scan_state: {
+                status: "progress",
+                current: processedUrlsCache.size,
+                total: Math.max(processedUrlsCache.size + 6, 30),
+                log: `Analyzing post layout profile matrix: item ${processedUrlsCache.size}...`
+              }
+            });
+  
+            try {
+              const instaProfile = await convertUrlToColorProfile(img.src);
+              const matchFound = localProfiles.some((localProfile) => isProfileSimilar(localProfile, instaProfile));
+  
+              if (matchFound) {
+                matchedUrlsCache.add(shortcode);
+                totalMatchesFoundCounter++;
+              } else {
+                unmatchedUrlsCache.add(shortcode);
+              }
+            } catch (e) {
+              console.debug("Skipped unreadable resource payload.");
+            }
           }
-        } catch (e) {
-          console.debug("Skip individual image signature conversion.");
         }
+  
+        // Draw overlays instantly to visible nodes while they remain present in the DOM
+        applyCachedOverlays();
+  
+        // Execute incremental scrolling interaction
+        window.scrollTo(0, document.body.scrollHeight);
+        await new Promise((resolve) => setTimeout(resolve, 1100)); // Optimal window loading stabilization delay
+  
+        const currentScrollHeight = document.body.scrollHeight;
+        if (currentScrollHeight === lastScrollHeight) {
+          noChangeCount++;
+          if (noChangeCount >= 2) break; // Reached bottom edge boundary safely
+        } else {
+          noChangeCount = 0;
+        }
+        lastScrollHeight = currentScrollHeight;
       }
   
-      applyCachedOverlays();
+      // Return view back safely to page peak
+      window.scrollTo({ top: 0, behavior: 'smooth' });
   
       if (chrome.runtime?.id) {
         chrome.storage.local.set({
@@ -212,7 +167,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     } catch (err) {
       if (chrome.runtime?.id) {
         chrome.storage.local.set({
-          scan_state: { status: "error", message: "An unexpected layout evaluation error occurred." },
+          scan_state: { status: "error", message: "An unexpected evaluation layout boundary error occurred." },
           is_scanning_active: false,
         });
       }
