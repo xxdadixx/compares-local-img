@@ -1,0 +1,23 @@
+{
+    "manifest_version": 3,
+    "name": "Instagram Profile-Specific Matcher",
+    "version": "1.2",
+    "description": "Links specific local image folders to individual Instagram profiles with unlimited storage capacity.",
+    "permissions": [
+      "storage",
+      "unlimitedStorage",
+      "activeTab"
+    ],
+    "host_permissions": [
+      "https://*.instagram.com/*"
+    ],
+    "action": {
+      "default_popup": "popup.html"
+    },
+    "content_scripts": [
+      {
+        "matches": ["https://*.instagram.com/*"],
+        "js": ["content.js"]
+      }
+    ]
+  }
