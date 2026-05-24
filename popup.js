@@ -7,14 +7,21 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
   const imageInput = document.getElementById("imageInput");
   const syncBtn = document.getElementById("syncBtn");
 
-  if (currentTab && currentTab.url && currentTab.url.includes("instagram.com")) {
+  if (
+    currentTab &&
+    currentTab.url &&
+    currentTab.url.includes("instagram.com")
+  ) {
     if (imageInput) imageInput.disabled = false;
     if (syncBtn) syncBtn.disabled = false;
 
     try {
       const urlObj = new URL(currentTab.url);
       const pathSegments = urlObj.pathname.split("/").filter(Boolean);
-      if (pathSegments.length > 0 && !["explore", "p", "reels", "stories"].includes(pathSegments[0])) {
+      if (
+        pathSegments.length > 0 &&
+        !["explore", "p", "reels", "stories"].includes(pathSegments[0])
+      ) {
         detectedUsername = pathSegments[0];
         targetProfileDiv.innerText = `@${detectedUsername}`;
       } else {
@@ -30,37 +37,71 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
 });
 
 // NEW: Listen for folder selection, process image matrices, and store data
-document.getElementById("imageInput").addEventListener("change", async (event) => {
-  const statusDiv = document.getElementById("status");
-  if (!detectedUsername) {
-    statusDiv.style.color = "#ed4956";
-    statusDiv.innerText = "Error: Navigate to a user profile first.";
-    return;
-  }
+// Listen for folder selection, process image matrices, and animate progress track
+document
+  .getElementById("imageInput")
+  .addEventListener("change", async (event) => {
+    const statusDiv = document.getElementById("status");
+    const progContainer = document.getElementById("progressContainer");
+    const progBar = document.getElementById("progressBar");
+    const progText = document.getElementById("progressText");
 
-  const files = Array.from(event.target.files).filter(file => file.type.startsWith("image/"));
-  if (files.length === 0) return;
-
-  statusDiv.style.color = "#8e8e8e";
-  statusDiv.innerText = `Processing ${files.length} images...`;
-
-  const processedProfiles = [];
-
-  for (const file of files) {
-    try {
-      const colorProfile = await generateColorProfileFromFile(file);
-      processedProfiles.push(colorProfile);
-    } catch (err) {
-      console.error("Failed to parse local file: ", file.name, err);
+    if (!detectedUsername) {
+      statusDiv.style.color = "#ff3b30";
+      statusDiv.innerText = "Error: Navigate to a user profile first.";
+      return;
     }
-  }
 
-  const storageKey = `insta_profile_${detectedUsername}`;
-  chrome.storage.local.set({ [storageKey]: processedProfiles }, () => {
-    statusDiv.style.color = "#0095f6";
-    statusDiv.innerText = `Folder loaded! Saved ${processedProfiles.length} image signatures.`;
+    const files = Array.from(event.target.files).filter((file) =>
+      file.type.startsWith("image/"),
+    );
+    if (files.length === 0) return;
+
+    // Initialize and display progress animation properties for loading phase
+    statusDiv.style.color = "#86868b";
+    statusDiv.innerText = `Synchronizing assets...`;
+
+    if (progContainer) progContainer.style.display = "block";
+    if (progBar) progBar.style.width = "0%";
+    if (progText) {
+      progText.style.display = "block";
+      progText.innerText = `0 of ${files.length} loaded`;
+    }
+
+    const processedProfiles = [];
+    let currentFileIndex = 0;
+
+    for (const file of files) {
+      try {
+        const colorProfile = await generateColorProfileFromFile(file);
+        processedProfiles.push(colorProfile);
+      } catch (err) {
+        console.error("Failed to parse local file: ", file.name, err);
+      }
+
+      // Advance real-time progress layout animations incrementally
+      currentFileIndex++;
+      if (progBar) {
+        const percentage = (currentFileIndex / files.length) * 100;
+        progBar.style.width = `${percentage}%`;
+      }
+      if (progText) {
+        progText.innerText = `${currentFileIndex} of ${files.length} items parsed`;
+      }
+    }
+
+    const storageKey = `insta_profile_${detectedUsername}`;
+    chrome.storage.local.set({ [storageKey]: processedProfiles }, () => {
+      statusDiv.style.color = "#34c759"; // Premium Success Green
+      statusDiv.innerText = `Folder loaded! Saved ${processedProfiles.length} image signatures.`;
+
+      // Smoothly hide tracking display window after operations finish successfully
+      setTimeout(() => {
+        if (progContainer) progContainer.style.display = "none";
+        if (progText) progText.style.display = "none";
+      }, 1800);
+    });
   });
-});
 
 // Helper to convert an uploaded local file object to a 10x10 data array
 function generateColorProfileFromFile(file) {
@@ -119,7 +160,9 @@ document.getElementById("syncBtn").addEventListener("click", () => {
           { action: "scan_instagram" },
           (response) => {
             if (chrome.runtime.lastError) {
-              console.debug("Port closed naturally. Relying on decoupled storage listeners.");
+              console.debug(
+                "Port closed naturally. Relying on decoupled storage listeners.",
+              );
             }
           },
         );
@@ -141,7 +184,8 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
       statusDiv.style.color = "#8e8e8e";
       statusDiv.innerText = state.log || "Scanning...";
       if (progBar && progText) {
-        const percentage = state.total > 0 ? (state.current / state.total) * 100 : 0;
+        const percentage =
+          state.total > 0 ? (state.current / state.total) * 100 : 0;
         progBar.style.width = `${percentage}%`;
         progText.innerText = `${state.current} / ${state.total}`;
       }

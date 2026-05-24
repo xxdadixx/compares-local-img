@@ -1,249 +1,420 @@
+// content.js
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    if (!chrome.runtime?.id) return;
-  
-    if (request.action === "scan_instagram") {
-      sendResponse({ status: "acknowledged" });
-  
-      matchImages().catch((error) => {
-        if (chrome.runtime?.id) {
-          chrome.storage.local.set({
-            scan_state: {
-              status: "error",
-              message: error.message || "Scan failed unexpectedly.",
-            },
-            is_scanning_active: false,
-          });
-        }
-      });
-      return true;
-    }
-  });
-  
-  let scrollDebounceTimeout = null;
-  const observer = new MutationObserver(() => {
-    if (!chrome.runtime?.id) {
-      observer.disconnect();
-      return;
-    }
-  
-    clearTimeout(scrollDebounceTimeout);
-    scrollDebounceTimeout = setTimeout(() => {
-      applyCachedOverlays();
-    }, 400);
-  });
-  
-  observer.observe(document.body, { childList: true, subtree: true });
-  
-  function getPageUsername() {
-    const profileHeaderTitle = document.querySelector('header h2, header h1, h2[class*="Username"]');
-    if (profileHeaderTitle && profileHeaderTitle.textContent) {
-      const cleanName = profileHeaderTitle.textContent.trim().split(" ")[0];
-      if (cleanName && cleanName.length > 0) return cleanName;
-    }
-  
-    const pathSegments = window.location.pathname.split("/").filter((segment) => segment.length > 0);
-    const ignoredPaths = ["explore", "p", "stories", "reels", "reel", "direct", "developer", "emails"];
-    if (pathSegments.length > 0 && !ignoredPaths.includes(pathSegments[0])) {
-      return pathSegments[0];
-    }
-  
-    return null;
+  if (!chrome.runtime?.id) return;
+
+  if (request.action === "scan_instagram") {
+    sendResponse({ status: "acknowledged" });
+
+    matchImages().catch((error) => {
+      if (chrome.runtime?.id) {
+        chrome.storage.local.set({
+          scan_state: {
+            status: "error",
+            message: error.message || "Scan failed unexpectedly.",
+          },
+          is_scanning_active: false,
+        });
+      }
+    });
+    return true;
   }
-  
-  let matchedUrlsCache = new Set();
-  let unmatchedUrlsCache = new Set();
-  let processedUrlsCache = new Set(); // Tracks historical unique shortcodes to prevent re-processing
-  let totalMatchesFoundCounter = 0;
-  
-  /**
-   * FIXED: High-performance, synchronized loop that extracts, processes, 
-   * and applies image badges instantly before the DOM can unmount them.
-   */
-  async function matchImages() {
-    if (!chrome.runtime?.id) return;
-  
-    const currentUsername = getPageUsername();
-    if (!currentUsername) {
+});
+
+let scrollDebounceTimeout = null;
+const observer = new MutationObserver(() => {
+  if (!chrome.runtime?.id) {
+    observer.disconnect();
+    return;
+  }
+
+  clearTimeout(scrollDebounceTimeout);
+  scrollDebounceTimeout = setTimeout(() => {
+    applyCachedOverlays();
+  }, 400);
+});
+
+observer.observe(document.body, { childList: true, subtree: true });
+
+function getPageUsername() {
+  const profileHeaderTitle = document.querySelector(
+    'header h2, header h1, h2[class*="Username"]',
+  );
+  if (profileHeaderTitle && profileHeaderTitle.textContent) {
+    const cleanName = profileHeaderTitle.textContent.trim().split(" ")[0];
+    if (cleanName && cleanName.length > 0) return cleanName;
+  }
+
+  const pathSegments = window.location.pathname
+    .split("/")
+    .filter((segment) => segment.length > 0);
+  const ignoredPaths = [
+    "explore",
+    "p",
+    "stories",
+    "reels",
+    "reel",
+    "direct",
+    "developer",
+    "emails",
+  ];
+  if (pathSegments.length > 0 && !ignoredPaths.includes(pathSegments[0])) {
+    return pathSegments[0];
+  }
+
+  return null;
+}
+
+let matchedUrlsCache = new Set();
+let unmatchedUrlsCache = new Set();
+let processingUrlsCache = new Set(); // Track elements currently in processing queue
+let processedUrlsCache = new Set();
+let totalMatchesFoundCounter = 0;
+
+async function matchImages() {
+  if (!chrome.runtime?.id) return;
+
+  const currentUsername = getPageUsername();
+  if (!currentUsername) {
+    chrome.storage.local.set({
+      scan_state: {
+        status: "error",
+        message: "Not on a valid user profile page.",
+      },
+      is_scanning_active: false,
+    });
+    return;
+  }
+
+  // Clear operational states cleanly
+  matchedUrlsCache.clear();
+  unmatchedUrlsCache.clear();
+  processedUrlsCache.clear();
+  if (typeof processingUrlsCache !== "undefined") processingUrlsCache.clear();
+  totalMatchesFoundCounter = 0;
+
+  document
+    .querySelectorAll(".processed-by-ext")
+    .forEach((el) => el.classList.remove("processed-by-ext"));
+  document
+    .querySelectorAll(".insta-match-badge")
+    .forEach((badge) => badge.remove());
+
+  try {
+    const storageKey = `insta_profile_${currentUsername}`;
+    const data = await new Promise((res) =>
+      chrome.storage.local.get([storageKey], res),
+    );
+    const localProfiles = data[storageKey] || [];
+
+    if (localProfiles.length === 0) {
       chrome.storage.local.set({
-        scan_state: { status: "error", message: "Not on a valid user profile page." },
+        scan_state: {
+          status: "error",
+          message: "No local image folder loaded for this user yet.",
+        },
         is_scanning_active: false,
       });
       return;
     }
-  
-    // Reset tracking states cleanly
-    matchedUrlsCache.clear();
-    unmatchedUrlsCache.clear();
-    processedUrlsCache.clear();
-    totalMatchesFoundCounter = 0;
-    document.querySelectorAll(".processed-by-ext").forEach((el) => el.classList.remove("processed-by-ext"));
-    document.querySelectorAll(".insta-match-badge").forEach((badge) => badge.remove());
-  
-    try {
-      const storageKey = `insta_profile_${currentUsername}`;
-      const data = await new Promise((res) => chrome.storage.local.get([storageKey], res));
-      const localProfiles = data[storageKey] || [];
-  
-      if (localProfiles.length === 0) {
-        chrome.storage.local.set({
-          scan_state: { status: "error", message: "No local image folder loaded for this user yet." },
-          is_scanning_active: false,
-        });
-        return;
+
+    let lastProcessedCount = 0;
+    let noNewItemsCount = 0;
+    let consecutiveHeightMatches = 0;
+    let lastScrollHeight = 0;
+
+    // Guard parameter ensuring protection against endless background loops
+    const maxScrollLoops = 150;
+
+    for (let loop = 0; loop < maxScrollLoops; loop++) {
+      if (!chrome.runtime?.id) break;
+
+      const visibleElements = document.querySelectorAll(
+        'a[href*="/p/"], a[href*="/reel/"]',
+      );
+
+      // Phase 1: Set preliminary overlays on newly revealed items
+      for (const el of visibleElements) {
+        const href = el.getAttribute("href") || "";
+        const segments = href.split("/").filter(Boolean);
+        const shortcode =
+          segments[1] === "p" || segments[1] === "reel"
+            ? segments[2]
+            : segments[1];
+
+        if (shortcode && !processedUrlsCache.has(shortcode)) {
+          if (
+            typeof processingUrlsCache !== "undefined" &&
+            !processingUrlsCache.has(shortcode)
+          ) {
+            processingUrlsCache.add(shortcode);
+          }
+          updateOrCreateOverlay(el, "🕒 PROCESSING...", "#e2a100");
+        }
       }
-  
-      let lastScrollHeight = 0;
-      let noChangeCount = 0;
-      const maxScrollAttempts = 35; // Extends structural scanning depth
-  
-      for (let i = 0; i < maxScrollAttempts; i++) {
-        if (!chrome.runtime?.id) break;
-  
-        // Find all target containers currently available in the active DOM frame
-        const visibleElements = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
-        
-        // Process newly rendered items immediately on this viewport frame
-        for (const el of visibleElements) {
-          const img = el.querySelector("img");
-          const href = el.getAttribute("href") || "";
-          const segments = href.split("/").filter(Boolean);
-          const shortcode = segments[1] === "p" || segments[1] === "reel" ? segments[2] : segments[1];
-  
-          if (shortcode && img && img.src && !img.src.startsWith("blob:") && !processedUrlsCache.has(shortcode)) {
+
+      // Phase 2: Matrix comparison execution
+      for (const el of visibleElements) {
+        const img = el.querySelector("img");
+        const href = el.getAttribute("href") || "";
+        const segments = href.split("/").filter(Boolean);
+        const shortcode =
+          segments[1] === "p" || segments[1] === "reel"
+            ? segments[2]
+            : segments[1];
+
+        if (
+          shortcode &&
+          img &&
+          img.src &&
+          !img.src.startsWith("blob:") &&
+          !processedUrlsCache.has(shortcode)
+        ) {
+          chrome.storage.local.set({
+            scan_state: {
+              status: "progress",
+              current: processedUrlsCache.size + 1,
+              total: Math.max(
+                visibleElements.length,
+                processedUrlsCache.size + 1,
+              ),
+              log: `Processing layouts: evaluating item ${processedUrlsCache.size + 1}...`,
+            },
+          });
+
+          try {
+            const instaProfile = await convertUrlToColorProfile(img.src);
+            const matchFound = localProfiles.some((localProfile) =>
+              isProfileSimilar(localProfile, instaProfile),
+            );
+
+            if (typeof processingUrlsCache !== "undefined")
+              processingUrlsCache.delete(shortcode);
             processedUrlsCache.add(shortcode);
-  
-            // Update popup pipeline telemetry details smoothly
-            chrome.storage.local.set({
-              scan_state: {
-                status: "progress",
-                current: processedUrlsCache.size,
-                total: Math.max(processedUrlsCache.size + 6, 30),
-                log: `Analyzing post layout profile matrix: item ${processedUrlsCache.size}...`
-              }
-            });
-  
-            try {
-              const instaProfile = await convertUrlToColorProfile(img.src);
-              const matchFound = localProfiles.some((localProfile) => isProfileSimilar(localProfile, instaProfile));
-  
-              if (matchFound) {
-                matchedUrlsCache.add(shortcode);
-                totalMatchesFoundCounter++;
-              } else {
-                unmatchedUrlsCache.add(shortcode);
-              }
-            } catch (e) {
-              console.debug("Skipped unreadable resource payload.");
+
+            if (matchFound) {
+              matchedUrlsCache.add(shortcode);
+              totalMatchesFoundCounter++;
+              updateOrCreateOverlay(el, "💾 MATCHED", "#0095f6");
+            } else {
+              unmatchedUrlsCache.add(shortcode);
+              updateOrCreateOverlay(el, "❌ NO MATCH", "rgba(38, 38, 38, 0.7)");
             }
+            el.classList.add("processed-by-ext");
+          } catch (e) {
+            if (typeof processingUrlsCache !== "undefined")
+              processingUrlsCache.delete(shortcode);
+            console.debug("Skipped unreadable asset payload block.");
           }
         }
-  
-        // Draw overlays instantly to visible nodes while they remain present in the DOM
-        applyCachedOverlays();
-  
-        // Execute incremental scrolling interaction
-        window.scrollTo(0, document.body.scrollHeight);
-        await new Promise((resolve) => setTimeout(resolve, 1100)); // Optimal window loading stabilization delay
-  
-        const currentScrollHeight = document.body.scrollHeight;
+      }
+
+      applyCachedOverlays();
+
+      // Tracking state updates to prevent early extraction failures
+      const currentScrollHeight = document.body.scrollHeight;
+      const currentProcessedCount = processedUrlsCache.size;
+
+      if (currentProcessedCount > lastProcessedCount) {
+        // Items are being scanned normally. Reset failure monitors.
+        noNewItemsCount = 0;
+        consecutiveHeightMatches = 0;
+      } else {
+        noNewItemsCount++;
         if (currentScrollHeight === lastScrollHeight) {
-          noChangeCount++;
-          if (noChangeCount >= 2) break; // Reached bottom edge boundary safely
+          consecutiveHeightMatches++;
         } else {
-          noChangeCount = 0;
+          consecutiveHeightMatches = 0;
         }
-        lastScrollHeight = currentScrollHeight;
       }
-  
-      // Return view back safely to page peak
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-  
-      if (chrome.runtime?.id) {
-        chrome.storage.local.set({
-          scan_state: { status: "complete", matchesFound: totalMatchesFoundCounter },
-          is_scanning_active: false,
-        });
+
+      // Check if we reached the absolute profile footer boundary safely
+      if (noNewItemsCount >= 4 || consecutiveHeightMatches >= 3) {
+        // Wait one final time with a fallback window to accommodate lazy network elements
+        window.scrollTo(0, document.body.scrollHeight);
+        await new Promise((res) => setTimeout(res, 2200));
+
+        if (
+          processedUrlsCache.size === currentProcessedCount &&
+          document.body.scrollHeight === currentScrollHeight
+        ) {
+          break; // Confirmed: Profile has completely finished loading
+        }
       }
-    } catch (err) {
-      if (chrome.runtime?.id) {
-        chrome.storage.local.set({
-          scan_state: { status: "error", message: "An unexpected evaluation layout boundary error occurred." },
-          is_scanning_active: false,
-        });
-      }
+
+      lastProcessedCount = currentProcessedCount;
+      lastScrollHeight = currentScrollHeight;
+
+      // Scroll smoothly down the feed
+      window.scrollTo(0, document.body.scrollHeight);
+
+      // Variable Adaptive Stabilization Delay (reduces lag by relaxing page rendering cycles)
+      const dynamicDelay = consecutiveHeightMatches > 0 ? 1600 : 1250;
+      await new Promise((resolve) => setTimeout(resolve, dynamicDelay));
+    }
+
+    // Scroll back to peak cleanly
+    window.scrollTo({ top: 0, behavior: "smooth" });
+
+    if (chrome.runtime?.id) {
+      chrome.storage.local.set({
+        scan_state: {
+          status: "complete",
+          matchesFound: totalMatchesFoundCounter,
+        },
+        is_scanning_active: false,
+      });
+    }
+  } catch (err) {
+    if (chrome.runtime?.id) {
+      chrome.storage.local.set({
+        scan_state: {
+          status: "error",
+          message: "Scan pipeline processing interrupted.",
+        },
+        is_scanning_active: false,
+      });
     }
   }
-  
-  function applyCachedOverlays() {
-    const postContainers = document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]');
-    postContainers.forEach((container) => {
-      const urlPath = container.getAttribute("href") || "";
-      const segments = urlPath.split("/").filter(Boolean);
-      const shortcode = segments[1] === "p" || segments[1] === "reel" ? segments[2] : segments[1];
-      if (!shortcode) return;
-  
-      if (matchedUrlsCache.has(shortcode)) {
-        updateOrCreateOverlay(container, "💾 MATCHED", "#0095f6");
-        container.classList.add("processed-by-ext");
-      } else if (unmatchedUrlsCache.has(shortcode)) {
-        updateOrCreateOverlay(container, "❌ NO MATCH", "rgba(38, 38, 38, 0.7)");
-        container.classList.add("processed-by-ext");
-      }
-    });
-  }
-  
-  function convertUrlToColorProfile(url) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = "Anonymous";
-      img.src = url;
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = 10;
-        canvas.height = 10;
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, 10, 10);
-          const imgData = ctx.getImageData(0, 0, 10, 10).data;
-          resolve(Array.from(imgData));
-        } else {
-          reject(new Error("Canvas generation failure."));
-        }
-      };
-      img.onerror = (err) => reject(err);
-    });
-  }
-  
-  function isProfileSimilar(profile1, profile2) {
-    if (profile1.length !== profile2.length) return false;
-    let totalDifference = 0;
-    for (let i = 0; i < profile1.length; i++) {
-      if ((i + 1) % 4 === 0) continue;
-      totalDifference += Math.abs(profile1[i] - profile2[i]);
+}
+
+function applyCachedOverlays() {
+  const postContainers = document.querySelectorAll(
+    'a[href*="/p/"], a[href*="/reel/"]',
+  );
+  postContainers.forEach((container) => {
+    const urlPath = container.getAttribute("href") || "";
+    const segments = urlPath.split("/").filter(Boolean);
+    const shortcode =
+      segments[1] === "p" || segments[1] === "reel" ? segments[2] : segments[1];
+    if (!shortcode) return;
+
+    if (matchedUrlsCache.has(shortcode)) {
+      updateOrCreateOverlay(container, "💾 MATCHED", "#0095f6");
+      container.classList.add("processed-by-ext");
+    } else if (unmatchedUrlsCache.has(shortcode)) {
+      updateOrCreateOverlay(container, "❌ NO MATCH", "rgba(38, 38, 38, 0.7)");
+      container.classList.add("processed-by-ext");
+    } else if (processingUrlsCache.has(shortcode)) {
+      updateOrCreateOverlay(container, "🕒 PROCESSING...", "#e2a100");
     }
-    const averageChannelDifference = totalDifference / (profile1.length * 0.75);
-    return averageChannelDifference < 12;
+  });
+}
+
+function convertUrlToColorProfile(url) {
+  return new Promise((resolve, reject) => {
+    // FIX: Enforce string type validation and clean potential execution protocol anomalies
+    if (!url || typeof url !== "string") {
+      return reject(new Error("Invalid target image reference URL."));
+    }
+
+    const img = new Image();
+    img.crossOrigin = "Anonymous";
+    img.src = url;
+
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 10;
+      canvas.height = 10;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, 10, 10);
+        const imgData = ctx.getImageData(0, 0, 10, 10).data;
+        resolve(Array.from(imgData));
+      } else {
+        reject(new Error("Canvas context extraction failure."));
+      }
+    };
+    img.onerror = (err) =>
+      reject(
+        new Error("Unable to parse asset destination target layout securely."),
+      );
+  });
+}
+
+function isProfileSimilar(profile1, profile2) {
+  if (profile1.length !== profile2.length) return false;
+  let totalDifference = 0;
+  for (let i = 0; i < profile1.length; i++) {
+    if ((i + 1) % 4 === 0) continue;
+    totalDifference += Math.abs(profile1[i] - profile2[i]);
   }
-  
-  function updateOrCreateOverlay(containerElement, text, backgroundColor) {
+  const averageChannelDifference = totalDifference / (profile1.length * 0.75);
+  return averageChannelDifference < 12;
+}
+
+function updateOrCreateOverlay(containerElement, text, statusType) {
+    // Establish parent positioning context boundaries
     containerElement.style.position = "relative";
-    let overlay = containerElement.querySelector(".insta-match-badge");
-    if (!overlay) {
+    
+    // FIX: Collect all potential duplicates that accumulated due to DOM recycling
+    const existingBadges = containerElement.querySelectorAll(".insta-match-badge");
+    let overlay = null;
+  
+    if (existingBadges.length > 0) {
+      // Keep the first existing instance as our singular UI handle
+      overlay = existingBadges[0];
+      // Evict all overlapping duplicates cleanly from the container link frame
+      for (let i = 1; i < existingBadges.length; i++) {
+        existingBadges[i].remove();
+      }
+    } else {
+      // Standard instantiation step if no badge exists yet
       overlay = document.createElement("div");
       overlay.className = "insta-match-badge";
       containerElement.appendChild(overlay);
     }
-    overlay.innerText = text;
-    overlay.style.position = "absolute";
-    overlay.style.bottom = "12px";
-    overlay.style.right = "12px";
-    overlay.style.backgroundColor = backgroundColor;
-    overlay.style.color = "white";
-    overlay.style.padding = "5px 10px";
-    overlay.style.borderRadius = "4px";
-    overlay.style.fontSize = "12px";
-    overlay.style.fontWeight = "bold";
-    overlay.style.zIndex = "999";
-    overlay.style.pointerEvents = "none";
-    overlay.style.transition = "all 0.2s ease";
+  
+    // Apple Theme Configuration Model Maps
+    let displayConfig = {
+      text: "⋯ Processing",
+      bg: "rgba(255, 255, 255, 0.7)",
+      border: "rgba(255, 255, 255, 0.4)",
+      color: "#1d1d1f"
+    };
+  
+    if (text.includes("MATCHED")) {
+      displayConfig = {
+        text: "✓ Matched",
+        bg: "rgba(52, 199, 89, 0.25)",      // Apple Premium Eco Green
+        border: "rgba(52, 199, 89, 0.4)",
+        color: "#248a3d"
+      };
+    } else if (text.includes("NO MATCH")) {
+      displayConfig = {
+        text: "✕ Unmatched",
+        bg: "rgba(255, 59, 48, 0.18)",       // Apple Translucent Red
+        border: "rgba(255, 59, 48, 0.35)",
+        color: "#ff3b30"
+      };
+    }
+  
+    // Update typography text content without generating structural mutation thrashing
+    if (overlay.innerText !== displayConfig.text) {
+      overlay.innerText = displayConfig.text;
+    }
+  
+    // Enforce hardware styles explicitly to overwrite overlapping layouts
+    Object.assign(overlay.style, {
+      position: "absolute",
+      bottom: "10px",
+      right: "10px",
+      backgroundColor: displayConfig.bg,
+      color: displayConfig.color,
+      border: `1px solid ${displayConfig.border}`,
+      backdropFilter: "blur(16px) saturate(140%)", 
+      webkitBackdropFilter: "blur(16px) saturate(140%)",
+      padding: "4px 10px",
+      borderRadius: "20px",
+      fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
+      fontSize: "11px",
+      fontWeight: "600",
+      letterSpacing: "-0.1px",                      
+      boxShadow: "0 4px 12px rgba(0, 0, 0, 0.06)",  
+      zIndex: "99",
+      pointerEvents: "none",
+      display: "flex",
+      alignItems: "center",
+      gap: "4px",
+      transition: "all 0.3s cubic-bezier(0.25, 1, 0.5, 1)"
+    });
   }
