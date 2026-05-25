@@ -180,6 +180,8 @@ async function runBackgroundApiScan(tabId) {
     if (!shortcode) continue;
 
     processingUrlsCache.add(shortcode);
+    applyOverlayForShortcode(shortcode); // Immediate localized status badge feedback
+
     chrome.storage.local.set({
       [`scan_state_${tabId}`]: {
         status: "progress",
@@ -205,7 +207,6 @@ async function runBackgroundApiScan(tabId) {
     let matchedCount = 0;
     const totalCount = itemUrls.length;
 
-    // Check every single slide image in order to collect the exact match counts
     for (const srcUrl of itemUrls) {
       try {
         const instaProfile = await convertUrlToColorProfile(srcUrl);
@@ -213,7 +214,7 @@ async function runBackgroundApiScan(tabId) {
           matchedCount++;
         }
       } catch (e) {
-        /* skip unreadable media candidates securely */
+        /* skip unreadable candidates safely */
       }
     }
 
@@ -224,8 +225,7 @@ async function runBackgroundApiScan(tabId) {
       totalMatchesFoundCounter++;
     }
 
-    // Refresh layout view presentation elements concurrently
-    applyCachedOverlays();
+    applyOverlayForShortcode(shortcode);
   }
 
   // Finalize Execution Pipeline Context
@@ -238,13 +238,13 @@ async function runBackgroundApiScan(tabId) {
   });
 }
 
-function applyCachedOverlays() {
-  const postContainers = Array.from(
-    document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
-  ).filter((el) => !el.closest('div[role="dialog"]'));
-  postContainers.forEach((container) => {
-    const shortcode = extractShortcode(container.getAttribute("href"));
-    if (!shortcode) return;
+function applyOverlayForShortcode(shortcode) {
+  if (!shortcode) return;
+  const elements = document.querySelectorAll(
+    `a[href*="/p/${shortcode}"], a[href*="/reel/${shortcode}"]`,
+  );
+  elements.forEach((container) => {
+    if (container.closest('div[role="dialog"]')) return;
 
     if (postMatchStatsCache.has(shortcode)) {
       const { matchedCount, totalCount } = postMatchStatsCache.get(shortcode);
@@ -267,15 +267,17 @@ function convertUrlToColorProfile(url) {
     img.crossOrigin = "Anonymous";
     img.src = `${url}${url.includes("?") ? "&" : "?"}ext_cb=${Date.now()}`;
     img.onload = () => {
-      const canvas = document.createElement("canvas");
-      canvas.width = 10;
-      canvas.height = 10;
-      const ctx = canvas.getContext("2d");
-      if (ctx) {
-        ctx.drawImage(img, 0, 0, 10, 10);
-        resolve(Array.from(ctx.getImageData(0, 0, 10, 10).data));
-      } else {
-        reject(new Error("Canvas failure"));
+      try {
+        const canvas = new OffscreenCanvas(10, 10);
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, 10, 10);
+          resolve(Array.from(ctx.getImageData(0, 0, 10, 10).data));
+        } else {
+          reject(new Error("Canvas failure"));
+        }
+      } catch (err) {
+        reject(err);
       }
     };
     img.onerror = (err) => reject(err);
@@ -285,11 +287,14 @@ function convertUrlToColorProfile(url) {
 function isProfileSimilar(profile1, profile2) {
   if (profile1.length !== profile2.length) return false;
   let diff = 0;
+  const maxAllowedDiff = 12 * (profile1.length * 0.75); // Premap math constraint boundary
+
   for (let i = 0; i < profile1.length; i++) {
-    if ((i + 1) % 4 === 0) continue;
+    if ((i + 1) % 4 === 0) continue; // Skip alpha channels
     diff += Math.abs(profile1[i] - profile2[i]);
+    if (diff >= maxAllowedDiff) return false; // Early exit strategy for unmatched profiles
   }
-  return diff / (profile1.length * 0.75) < 12;
+  return true;
 }
 
 function updateOrCreateOverlay(
