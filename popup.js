@@ -1,10 +1,37 @@
 // popup.js
 let detectedUsername = null;
-let currentTabId = null; // Track current tab id
+let currentTabId = null;
 
-// Helper to safely restore current layout states on initialization
+// Initialize window parameters query properties
+const urlParams = new URLSearchParams(window.location.search);
+const isDetachedPanel = urlParams.get("detached") === "true";
+const queryTabId = urlParams.get("targetTabId");
+
+if (isDetachedPanel) {
+  // Minimize outer layouts margins inside standalone windows wrapper
+  document.body.style.padding = "10px";
+  const detachLink = document.getElementById("detachWinBtn");
+  if (detachLink) detachLink.style.display = "none";
+}
+
+// Controller link engine to pop out a persistent independent panel
+document.getElementById("detachWinBtn").addEventListener("click", () => {
+  if (!currentTabId) return;
+  // Creates standard popup-typed panel mirroring structural configuration parameters
+  chrome.windows.create({
+    url: chrome.runtime.getURL(
+      `popup.html?detached=true&targetTabId=${currentTabId}`,
+    ),
+    type: "popup",
+    width: 306, // Compounded value adjusting inner content layout frames
+    height: 320,
+    focused: true,
+  });
+  window.close(); // Closes the transient browser popup drop list frame securely
+});
+
 function restoreScanState() {
-  if (!currentTabId) return; // Ensure we have a tab ID before checking state
+  if (!currentTabId) return;
 
   const statusDiv = document.getElementById("status");
   const progContainer = document.getElementById("progressContainer");
@@ -12,7 +39,6 @@ function restoreScanState() {
   const progText = document.getElementById("progressText");
   const syncBtn = document.getElementById("syncBtn");
 
-  // Scope keys with currentTabId to prevent cross-tab bleeding
   const activeKey = `is_scanning_active_${currentTabId}`;
   const stateKey = `scan_state_${currentTabId}`;
 
@@ -49,31 +75,27 @@ function restoreScanState() {
         progText.style.display = "block";
         progText.innerText = "Finished";
       }
+      if (syncBtn) syncBtn.disabled = false;
     } else if (state.status === "error") {
       statusDiv.style.color = "#ed4956";
       statusDiv.innerText = `Error: ${state.message}`;
+      if (syncBtn) syncBtn.disabled = false;
     }
   });
 }
 
-// Check if active tab is on Instagram and enable controls
-chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-  const currentTab = tabs[0];
+function processTabDetails(targetTab) {
   const targetProfileDiv = document.getElementById("targetProfile");
   const imageInput = document.getElementById("imageInput");
   const syncBtn = document.getElementById("syncBtn");
 
-  if (
-    currentTab &&
-    currentTab.url &&
-    currentTab.url.includes("instagram.com")
-  ) {
-    currentTabId = currentTab.id; // Store tab ID dynamically
+  if (targetTab && targetTab.url && targetTab.url.includes("instagram.com")) {
+    currentTabId = targetTab.id;
     if (imageInput) imageInput.disabled = false;
     if (syncBtn) syncBtn.disabled = false;
 
     try {
-      const urlObj = new URL(currentTab.url);
+      const urlObj = new URL(targetTab.url);
       const pathSegments = urlObj.pathname.split("/").filter(Boolean);
       if (
         pathSegments.length > 0 &&
@@ -87,16 +109,29 @@ chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     } catch (e) {
       targetProfileDiv.innerText = "Ready to Scan";
     }
-
-    // Restore persistent states immediately after verifying layout environment context
     restoreScanState();
   } else {
     targetProfileDiv.style.color = "#ed4956";
     targetProfileDiv.innerText = "Please navigate to an Instagram Profile";
   }
-});
+}
 
-// Listen for folder selection, process image matrices, and store data
+// Environment Tab Extraction Routing Execution Path
+if (isDetachedPanel && queryTabId) {
+  chrome.tabs.get(parseInt(queryTabId, 10), (tab) => {
+    if (chrome.runtime.lastError || !tab) {
+      document.getElementById("targetProfile").innerText =
+        "Linked context lost.";
+    } else {
+      processTabDetails(tab);
+    }
+  });
+} else {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    processTabDetails(tabs[0]);
+  });
+}
+
 document
   .getElementById("imageInput")
   .addEventListener("change", async (event) => {
@@ -104,6 +139,8 @@ document
     const progContainer = document.getElementById("progressContainer");
     const progBar = document.getElementById("progressBar");
     const progText = document.getElementById("progressText");
+    const syncBtn = document.getElementById("syncBtn");
+    const inputEl = event.target;
 
     if (!detectedUsername) {
       statusDiv.style.color = "#ff3b30";
@@ -111,10 +148,14 @@ document
       return;
     }
 
-    const files = Array.from(event.target.files).filter((file) =>
+    const files = Array.from(inputEl.files).filter((file) =>
       file.type.startsWith("image/"),
     );
     if (files.length === 0) return;
+
+    // Lock input states mid-load loop iteration
+    if (syncBtn) syncBtn.disabled = true;
+    inputEl.disabled = true;
 
     statusDiv.style.color = "#86868b";
     statusDiv.innerText = `Synchronizing assets...`;
@@ -152,6 +193,9 @@ document
       statusDiv.style.color = "#34c759";
       statusDiv.innerText = `Folder loaded! Saved ${processedProfiles.length} image signatures.`;
 
+      if (syncBtn) syncBtn.disabled = false;
+      inputEl.disabled = false;
+
       setTimeout(() => {
         if (progContainer) progContainer.style.display = "none";
         if (progText) progText.style.display = "none";
@@ -171,8 +215,7 @@ function generateColorProfileFromFile(file) {
         const ctx = canvas.getContext("2d");
         if (ctx) {
           ctx.drawImage(img, 0, 0, 10, 10);
-          const imgData = ctx.getImageData(0, 0, 10, 10).data;
-          resolve(Array.from(imgData));
+          resolve(Array.from(ctx.getImageData(0, 0, 10, 10).data));
         } else {
           reject(new Error("Canvas context failed."));
         }
@@ -208,39 +251,23 @@ document.getElementById("syncBtn").addEventListener("click", () => {
   chrome.storage.local.set(
     { [activeKey]: true, [stateKey]: { status: "starting" } },
     () => {
-      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (!tabs[0] || !tabs[0].id) {
-          statusDiv.style.color = "#ed4956";
-          statusDiv.innerText = "Error: No active tab found.";
-          if (progContainer) progContainer.style.display = "none";
-          if (syncBtn) syncBtn.disabled = false;
-          chrome.storage.local.set({
-            [activeKey]: false,
-            [stateKey]: { status: "idle" },
-          });
-          return;
-        }
-
-        // Pass tabId explicitly inside the message payload
-        chrome.tabs.sendMessage(
-          tabs[0].id,
-          { action: "scan_instagram", tabId: tabs[0].id },
-          (response) => {
-            if (chrome.runtime.lastError) {
-              console.debug(
-                "Port closed naturally. Relying on decoupled storage listeners.",
-              );
-            }
-          },
-        );
-      });
+      chrome.tabs.sendMessage(
+        currentTabId,
+        { action: "scan_instagram", tabId: currentTabId },
+        () => {
+          if (chrome.runtime.lastError) {
+            console.debug(
+              "Port closed naturally. Relying on decoupled storage listeners.",
+            );
+          }
+        },
+      );
     },
   );
 });
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (!currentTabId || areaName !== "local") return;
-
   const targetStateKey = `scan_state_${currentTabId}`;
 
   if (changes[targetStateKey]?.newValue) {

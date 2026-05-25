@@ -1,200 +1,217 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    :root {
-      --primary: #0071e3;
-      --primary-hover: #0077ed;
-      --bg-glass: rgba(255, 255, 255, 0.8);
-      --border-glass: rgba(0, 0, 0, 0.08);
-      --text-main: #1d1d1f;
-      --text-secondary: #86868b;
-    }
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        --primary: #0071e3;
+        --primary-hover: #0077ed;
+        --bg-glass: rgba(255, 255, 255, 0.8);
+        --border-glass: rgba(0, 0, 0, 0.08);
+        --text-main: #1d1d1f;
+        --text-secondary: #86868b;
+      }
 
-    body {
-      width: 260px;
-      padding: 16px;
-      background-color: #f5f5f7;
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", Roboto, sans-serif;
-      color: var(--text-main);
-      margin: 0;
-      letter-spacing: -0.2px;
-    }
+      body {
+        width: 260px;
+        padding: 16px;
+        background-color: #f5f5f7;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+          "Segoe UI", Roboto, sans-serif;
+        color: var(--text-main);
+        margin: 0;
+        letter-spacing: -0.2px;
+      }
 
-    .card {
-      background: var(--bg-glass);
-      backdrop-filter: blur(20px);
-      -webkit-backdrop-filter: blur(20px);
-      border: 1px solid var(--border-glass);
-      border-radius: 14px;
-      padding: 14px;
-      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
-    }
+      .card {
+        background: var(--bg-glass);
+        backdrop-filter: blur(20px);
+        -webkit-backdrop-filter: blur(20px);
+        border: 1px solid var(--border-glass);
+        border-radius: 14px;
+        padding: 14px;
+        box-shadow: 0 4px 24px rgba(0, 0, 0, 0.04);
+      }
 
-    h3 {
-      margin: 0 0 4px 0;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-secondary);
-      text-transform: uppercase;
-      letter-spacing: 0.5px;
-    }
+      .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 4px;
+      }
 
-    #targetProfile {
-      font-size: 16px;
-      color: var(--text-main);
-      font-weight: 600;
-      margin-bottom: 16px;
-      word-break: break-all;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-    }
+      h3 {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
 
-    .field-label {
-      font-size: 12px;
-      color: var(--text-secondary);
-      font-weight: 500;
-      display: block;
-      margin-bottom: 6px;
-    }
+      .detach-action {
+        font-size: 11px;
+        color: var(--primary);
+        text-decoration: none;
+        font-weight: 600;
+        cursor: pointer;
+      }
 
-    /* Custom Apple-style upload wrapper */
-    .file-upload-wrapper {
-      position: relative;
-      width: 100%;
-      margin-bottom: 12px;
-    }
+      .detach-action:hover {
+        text-decoration: underline;
+      }
 
-    input[type="file"] {
-      width: 100%;
-      font-size: 11px;
-      color: var(--text-secondary);
-      background: rgba(0, 0, 0, 0.03);
-      border: 1px dashed rgba(0, 0, 0, 0.15);
-      padding: 8px;
-      border-radius: 8px;
-      box-sizing: border-box;
-      cursor: pointer;
-      transition: all 0.2s ease;
-    }
+      #targetProfile {
+        font-size: 16px;
+        color: var(--text-main);
+        font-weight: 600;
+        margin-bottom: 16px;
+        word-break: break-all;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
 
-    input[type="file"]:hover:not(:disabled) {
-      background: rgba(0, 0, 0, 0.05);
-      border-color: var(--primary);
-    }
+      .field-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+        font-weight: 500;
+        display: block;
+        margin-bottom: 6px;
+      }
 
-    input[type="file"]:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-    }
+      .file-upload-wrapper {
+        position: relative;
+        width: 100%;
+        margin-bottom: 12px;
+      }
 
-    /* Premium animated action button */
-    .btn {
-      display: block;
-      width: 100%;
-      padding: 10px;
-      background: var(--primary);
-      color: white;
-      border: none;
-      border-radius: 10px;
-      cursor: pointer;
-      font-size: 13px;
-      font-weight: 600;
-      letter-spacing: -0.1px;
-      box-shadow: 0 2px 8px rgba(0, 113, 227, 0.2);
-      transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
-      position: relative;
-      overflow: hidden;
-    }
+      input[type="file"] {
+        width: 100%;
+        font-size: 11px;
+        color: var(--text-secondary);
+        background: rgba(0, 0, 0, 0.03);
+        border: 1px dashed rgba(0, 0, 0, 0.15);
+        padding: 8px;
+        border-radius: 8px;
+        box-sizing: border-box;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
 
-    .btn:hover:not(:disabled) {
-      background: var(--primary-hover);
-      transform: translateY(-1px);
-      box-shadow: 0 4px 12px rgba(0, 113, 227, 0.3);
-    }
+      input[type="file"]:hover:not(:disabled) {
+        background: rgba(0, 0, 0, 0.05);
+        border-color: var(--primary);
+      }
 
-    .btn:active:not(:disabled) {
-      transform: translateY(1px);
-    }
+      input[type="file"]:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
 
-    .btn:disabled {
-      background: #e8e8ed;
-      color: #aeaeaf;
-      box-shadow: none;
-      cursor: not-allowed;
-    }
+      .btn {
+        display: block;
+        width: 100%;
+        padding: 10px;
+        background: var(--primary);
+        color: white;
+        border: none;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        letter-spacing: -0.1px;
+        box-shadow: 0 2px 8px rgba(0, 113, 227, 0.2);
+        transition: all 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+        position: relative;
+        overflow: hidden;
+      }
 
-    /* Animated scanning ripple effect */
-    .btn.scanning::after {
-      content: '';
-      position: absolute;
-      top: 0;
-      left: -100%;
-      width: 100%;
-      height: 100%;
-      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-      animation: loading-shimmer 1.5s infinite;
-    }
+      .btn:hover:not(:disabled) {
+        background: var(--primary-hover);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(0, 113, 227, 0.3);
+      }
 
-    /* Modern Progress Track */
-    #progressContainer {
-      display: none;
-      margin-top: 14px;
-      background: rgba(0, 0, 0, 0.04);
-      border-radius: 10px;
-      overflow: hidden;
-      height: 6px;
-      position: relative;
-    }
+      .btn:active:not(:disabled) {
+        transform: translateY(1px);
+      }
 
-    #progressBar {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, var(--primary), #30a3ff);
-      border-radius: 10px;
-      transition: width 0.4s cubic-bezier(0.25, 1, 0.5, 1);
-    }
+      .btn:disabled {
+        background: #e8e8ed;
+        color: #aeaeaf;
+        box-shadow: none;
+        cursor: not-allowed;
+      }
 
-    #progressText {
-      text-align: center;
-      font-size: 11px;
-      color: var(--text-secondary);
-      margin-top: 6px;
-      font-weight: 500;
-    }
+      #progressContainer {
+        display: none;
+        margin-top: 14px;
+        background: rgba(0, 0, 0, 0.04);
+        border-radius: 10px;
+        overflow: hidden;
+        height: 6px;
+        position: relative;
+      }
 
-    #status {
-      margin-top: 12px;
-      font-size: 12px;
-      color: var(--text-secondary);
-      text-align: center;
-      font-weight: 400;
-      transition: color 0.3s ease;
-    }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h3>Target Profile</h3>
-    <div id="targetProfile">Detecting profile...</div>
+      #progressBar {
+        height: 100%;
+        width: 0%;
+        background: linear-gradient(90deg, var(--primary), #30a3ff);
+        border-radius: 10px;
+        transition: width 0.4s cubic-bezier(0.25, 1, 0.5, 1);
+      }
 
-    <span class="field-label">Local Source Directory</span>
-    <div class="file-upload-wrapper">
-      <input type="file" id="imageInput" webkitdirectory directory multiple accept="image/*" disabled>
+      #progressText {
+        text-align: center;
+        font-size: 11px;
+        color: var(--text-secondary);
+        margin-top: 6px;
+        font-weight: 500;
+      }
+
+      #status {
+        margin-top: 12px;
+        font-size: 12px;
+        color: var(--text-secondary);
+        text-align: center;
+        font-weight: 400;
+        transition: color 0.3s ease;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="card-header">
+        <h3>Target Profile</h3>
+        <a id="detachWinBtn" class="detach-action">Open Panel ↗</a>
+      </div>
+      <div id="targetProfile">Detecting profile...</div>
+
+      <span class="field-label">Local Source Directory</span>
+      <div class="file-upload-wrapper">
+        <input
+          type="file"
+          id="imageInput"
+          webkitdirectory
+          directory
+          multiple
+          accept="image/*"
+          disabled
+        />
+      </div>
+
+      <button id="syncBtn" class="btn" disabled>Scan Profile</button>
+
+      <div id="progressContainer">
+        <div id="progressBar"></div>
+      </div>
+      <div id="progressText" style="display: none">0 / 0</div>
+
+      <div id="status"></div>
     </div>
-    
-    <button id="syncBtn" class="btn" disabled>Scan Profile</button>
-    
-    <div id="progressContainer">
-      <div id="progressBar"></div>
-    </div>
-    <div id="progressText" style="display: none;">0 / 0</div>
 
-    <div id="status"></div>
-  </div>
-  
-  <script src="popup.js"></script>
-</body>
+    <script src="popup.js"></script>
+  </body>
 </html>

@@ -10,69 +10,61 @@ try {
   console.debug("Script injection bypassed context constraints.");
 }
 
-// 2. Cross-Context Message Relay
-window.addEventListener("message", (event) => {
-  if (event.source !== window || !event.data) return;
-  if (event.data.type === "INSTA_API_INTERCEPTED") {
-    if (chrome.runtime?.id) {
-      chrome.runtime.sendMessage({
-        action: "process_api_payload",
-        url: event.data.url,
-        payload: event.data.payload,
-      });
-    }
-  }
-});
-
-// 3. Operational State Caches
-let matchedUrlsCache = new Set();
-let unmatchedUrlsCache = new Set();
-let processingUrlsCache = new Set();
-let processedUrlsCache = new Set();
+// 2. Operational Live View State Overlays Cache
+const postMatchStatsCache = new Map(); // Maps shortcode -> { matchedCount, totalCount }
+const processingUrlsCache = new Set();
 let totalMatchesFoundCounter = 0;
 
-// 4. MutationObserver & Debouncer Layout (Safely watches root node)
+function extractShortcode(href) {
+  if (!href) return null;
+  try {
+    const urlObj = href.startsWith("http")
+      ? new URL(href)
+      : new URL(href, window.location.origin);
+    const pathSegments = urlObj.pathname.split("/").filter(Boolean);
+    const pIndex = pathSegments.indexOf("p");
+    if (pIndex !== -1 && pathSegments[pIndex + 1])
+      return pathSegments[pIndex + 1];
+    const reelIndex = pathSegments.indexOf("reel");
+    if (reelIndex !== -1 && pathSegments[reelIndex + 1])
+      return pathSegments[reelIndex + 1];
+  } catch (e) {
+    /* fail-safe parsing constraint */
+  }
+  return null;
+}
+
+// 3. MutationObserver (Instantly hooks overlays as layouts render in view)
 let scrollDebounceTimeout = null;
 const observer = new MutationObserver(() => {
   if (!chrome.runtime?.id) {
     observer.disconnect();
     return;
   }
-
   clearTimeout(scrollDebounceTimeout);
   scrollDebounceTimeout = setTimeout(() => {
     applyCachedOverlays();
-  }, 400);
+  }, 300);
 });
-
 if (document.documentElement) {
   observer.observe(document.documentElement, {
     childList: true,
     subtree: true,
   });
-} else {
-  window.addEventListener("DOMContentLoaded", () => {
-    observer.observe(document.body, { childList: true, subtree: true });
-  });
 }
 
-// 5. Message listener for extension scans
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (!chrome.runtime?.id) return;
-
   if (request.action === "scan_instagram") {
     sendResponse({ status: "acknowledged" });
-
-    const assignedTabId = request.tabId;
-
-    matchImages(assignedTabId).catch((error) => {
-      if (chrome.runtime?.id && assignedTabId) {
+    runBackgroundApiScan(request.tabId).catch((error) => {
+      if (chrome.runtime?.id && request.tabId) {
         chrome.storage.local.set({
-          [`scan_state_${assignedTabId}`]: {
+          [`scan_state_${request.tabId}`]: {
             status: "error",
-            message: error.message || "Scan failed unexpectedly.",
+            message: error.message || "Execution faulted.",
           },
-          [`is_scanning_active_${assignedTabId}`]: false,
+          [`is_scanning_active_${request.tabId}`]: false,
         });
       }
     });
@@ -81,59 +73,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 function getPageUsername() {
-  const profileHeaderTitle = document.querySelector(
+  const titleEl = document.querySelector(
     'header h2, header h1, h2[class*="Username"]',
   );
-  if (profileHeaderTitle && profileHeaderTitle.textContent) {
-    const cleanName = profileHeaderTitle.textContent.trim().split(" ")[0];
-    if (cleanName && cleanName.length > 0) return cleanName;
-  }
-
-  const pathSegments = window.location.pathname
-    .split("/")
-    .filter((segment) => segment.length > 0);
-  const ignoredPaths = [
-    "explore",
-    "p",
-    "stories",
-    "reels",
-    "reel",
-    "direct",
-    "developer",
-    "emails",
-  ];
-  if (pathSegments.length > 0 && !ignoredPaths.includes(pathSegments[0])) {
-    return pathSegments[0];
-  }
-
+  if (titleEl?.textContent) return titleEl.textContent.trim().split(" ")[0];
+  const paths = window.location.pathname.split("/").filter(Boolean);
+  if (
+    paths.length > 0 &&
+    !["explore", "p", "stories", "reels", "reel", "direct"].includes(paths[0])
+  )
+    return paths[0];
   return null;
 }
 
-function isInsideModal(element) {
-  return !!element.closest('div[role="dialog"], div[role="presentation"]');
-}
-
-async function matchImages(tabId) {
+// 4. Background Fetch Integration Model Engine
+async function runBackgroundApiScan(tabId) {
   if (!chrome.runtime?.id) return;
-
   const currentUsername = getPageUsername();
-  if (!currentUsername) {
-    if (tabId) {
-      chrome.storage.local.set({
-        [`scan_state_${tabId}`]: {
-          status: "error",
-          message: "Not on a valid user profile page.",
-        },
-        [`is_scanning_active_${tabId}`]: false,
-      });
-    }
-    return;
-  }
+  if (!currentUsername) throw new Error("Not on a valid profile page.");
 
-  matchedUrlsCache.clear();
-  unmatchedUrlsCache.clear();
-  processedUrlsCache.clear();
-  if (typeof processingUrlsCache !== "undefined") processingUrlsCache.clear();
+  postMatchStatsCache.clear();
+  processingUrlsCache.clear();
   totalMatchesFoundCounter = 0;
 
   document
@@ -143,223 +103,169 @@ async function matchImages(tabId) {
     .querySelectorAll(".insta-match-badge")
     .forEach((badge) => badge.remove());
 
-  try {
-    const storageKey = `insta_profile_${currentUsername}`;
-    const data = await new Promise((res) =>
-      chrome.storage.local.get([storageKey], res),
-    );
-    const localProfiles = data[storageKey] || [];
+  const data = await new Promise((res) =>
+    chrome.storage.local.get([`insta_profile_${currentUsername}`], res),
+  );
+  const localProfiles = data[`insta_profile_${currentUsername}`] || [];
+  if (localProfiles.length === 0) throw new Error("No folder data loaded.");
 
-    if (localProfiles.length === 0) {
-      if (tabId) {
-        chrome.storage.local.set({
-          [`scan_state_${tabId}`]: {
-            status: "error",
-            message: "No local image folder loaded for this user yet.",
-          },
-          [`is_scanning_active_${tabId}`]: false,
-        });
-      }
-      return;
-    }
+  // Resolve Profile Meta String to User ID Identification Key
+  const profileResponse = await fetch(
+    `https://www.instagram.com/api/v1/users/web_profile_info/?username=${currentUsername}`,
+    {
+      headers: {
+        "X-IG-App-ID": "936619743392459",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+    },
+  );
+  if (!profileResponse.ok)
+    throw new Error("API tracking request rejected by platform.");
+  const profileJson = await profileResponse.json();
+  const userId = profileJson?.data?.user?.id;
+  if (!userId) throw new Error("Unable to map security tracking variables.");
 
-    let lastProcessedCount = 0;
-    let noNewItemsCount = 0;
-    let consecutiveHeightMatches = 0;
-    let lastScrollHeight = 0;
-    const maxScrollLoops = 150;
+  let allItems = [];
+  let nextMaxId = "";
+  let hasNextPage = true;
+  let pageIndex = 0;
 
-    for (let loop = 0; loop < maxScrollLoops; loop++) {
-      if (!chrome.runtime?.id) break;
+  // PHASE 1: Macro Payload Ingestion Loop
+  while (hasNextPage) {
+    if (!chrome.runtime?.id) return;
+    pageIndex++;
 
-      const visibleElements = Array.from(
-        document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
-      ).filter((el) => !isInsideModal(el));
+    chrome.storage.local.set({
+      [`scan_state_${tabId}`]: {
+        status: "progress",
+        phase: "fetching",
+        fetchCurrent: pageIndex,
+        fetchTotal: pageIndex + 1,
+        compareCurrent: 0,
+        compareTotal: 0,
+        log: `Synchronizing platform indexes (Page Milestone ${pageIndex})...`,
+      },
+    });
 
-      for (const el of visibleElements) {
-        const href = el.getAttribute("href") || "";
-        const segments = href.split("/").filter(Boolean);
-        const shortcode =
-          segments[1] === "p" || segments[1] === "reel"
-            ? segments[2]
-            : segments[1];
+    let feedUrl = `https://www.instagram.com/api/v1/feed/user/${userId}/?count=33`;
+    if (nextMaxId) feedUrl += `&max_id=${nextMaxId}`;
 
-        if (shortcode && !processedUrlsCache.has(shortcode)) {
-          if (
-            typeof processingUrlsCache !== "undefined" &&
-            !processingUrlsCache.has(shortcode)
-          ) {
-            processingUrlsCache.add(shortcode);
-          }
-          updateOrCreateOverlay(el, "🕒 PROCESSING...", "#e2a100");
-        }
-      }
+    const feedResponse = await fetch(feedUrl, {
+      headers: {
+        "X-IG-App-ID": "936619743392459",
+        "X-Requested-With": "XMLHttpRequest",
+      },
+    });
+    if (!feedResponse.ok) break;
 
-      for (const el of visibleElements) {
-        const href = el.getAttribute("href") || "";
-        const segments = href.split("/").filter(Boolean);
-        const shortcode =
-          segments[1] === "p" || segments[1] === "reel"
-            ? segments[2]
-            : segments[1];
+    const feedData = await feedResponse.json();
+    const items = feedData.items || [];
+    if (items.length === 0) break;
 
-        if (shortcode && !processedUrlsCache.has(shortcode)) {
-          // FIXED: Select all available images inside the item container (handles Carousels)
-          const imgs = Array.from(el.querySelectorAll("img")).filter(
-            (img) => img.src && !img.src.startsWith("blob:"),
-          );
+    allItems = allItems.concat(items);
+    hasNextPage = feedData.more_available;
+    nextMaxId = feedData.next_max_id;
 
-          if (imgs.length === 0) continue;
-
-          if (tabId) {
-            chrome.storage.local.set({
-              [`scan_state_${tabId}`]: {
-                status: "progress",
-                current: processedUrlsCache.size + 1,
-                total: Math.max(
-                  visibleElements.length,
-                  processedUrlsCache.size + 1,
-                ),
-                log: `Processing layouts: evaluating item ${processedUrlsCache.size + 1}...`,
-              },
-            });
-          }
-
-          let matchFound = false;
-
-          // Process all discovered slide images inside the post card
-          for (const img of imgs) {
-            try {
-              const instaProfile = await convertUrlToColorProfile(img.src);
-              const isImgMatched = localProfiles.some((localProfile) =>
-                isProfileSimilar(localProfile, instaProfile),
-              );
-
-              if (isImgMatched) {
-                matchFound = true;
-                break; // One match inside the carousel is enough to flag the post
-              }
-            } catch (e) {
-              console.debug("Skipped unreadable asset slide.");
-            }
-          }
-
-          if (typeof processingUrlsCache !== "undefined")
-            processingUrlsCache.delete(shortcode);
-          processedUrlsCache.add(shortcode);
-
-          if (matchFound) {
-            matchedUrlsCache.add(shortcode);
-            totalMatchesFoundCounter++;
-            updateOrCreateOverlay(el, "💾 MATCHED", "#0095f6");
-          } else {
-            unmatchedUrlsCache.add(shortcode);
-            updateOrCreateOverlay(el, "❌ NO MATCH", "rgba(38, 38, 38, 0.7)");
-          }
-          el.classList.add("processed-by-ext");
-        }
-      }
-
-      applyCachedOverlays();
-
-      const currentScrollHeight = document.body.scrollHeight;
-      const currentProcessedCount = processedUrlsCache.size;
-
-      if (currentProcessedCount > lastProcessedCount) {
-        noNewItemsCount = 0;
-        consecutiveHeightMatches = 0;
-      } else {
-        noNewItemsCount++;
-        if (currentScrollHeight === lastScrollHeight) {
-          consecutiveHeightMatches++;
-        } else {
-          consecutiveHeightMatches = 0;
-        }
-      }
-
-      if (noNewItemsCount >= 4 || consecutiveHeightMatches >= 3) {
-        window.scrollTo(0, document.body.scrollHeight);
-        await new Promise((res) => setTimeout(res, 2200));
-
-        if (
-          processedUrlsCache.size === currentProcessedCount &&
-          document.body.scrollHeight === currentScrollHeight
-        ) {
-          break;
-        }
-      }
-
-      lastProcessedCount = currentProcessedCount;
-      lastScrollHeight = currentScrollHeight;
-
-      window.scrollTo(0, document.body.scrollHeight);
-
-      const dynamicDelay = consecutiveHeightMatches > 0 ? 1600 : 1250;
-      await new Promise((resolve) => setTimeout(resolve, dynamicDelay));
-    }
-
-    window.scrollTo({ top: 0, behavior: "smooth" });
-
-    if (chrome.runtime?.id && tabId) {
-      chrome.storage.local.set({
-        [`scan_state_${tabId}`]: {
-          status: "complete",
-          matchesFound: totalMatchesFoundCounter,
-        },
-        [`is_scanning_active_${tabId}`]: false,
-      });
-    }
-  } catch (err) {
-    if (chrome.runtime?.id && tabId) {
-      chrome.storage.local.set({
-        [`scan_state_${tabId}`]: {
-          status: "error",
-          message: "Scan pipeline processing interrupted.",
-        },
-        [`is_scanning_active_${tabId}`]: false,
-      });
-    }
+    await new Promise((res) => setTimeout(res, 1000));
   }
+
+  // PHASE 2: Granular Signature Check Engine
+  const totalPosts = allItems.length;
+  let evaluateIndex = 0;
+
+  for (const item of allItems) {
+    if (!chrome.runtime?.id) return;
+    evaluateIndex++;
+    const shortcode = item.code;
+    if (!shortcode) continue;
+
+    processingUrlsCache.add(shortcode);
+    chrome.storage.local.set({
+      [`scan_state_${tabId}`]: {
+        status: "progress",
+        phase: "comparing",
+        fetchCurrent: 1,
+        fetchTotal: 1,
+        compareCurrent: evaluateIndex,
+        compareTotal: totalPosts,
+        log: `Cross-checking pixel arrays: post ${evaluateIndex} of ${totalPosts}...`,
+      },
+    });
+
+    const itemUrls = [];
+    if (Array.isArray(item.carousel_media)) {
+      item.carousel_media.forEach((m) => {
+        if (m.image_versions2?.candidates?.[0]?.url)
+          itemUrls.push(m.image_versions2.candidates[0].url);
+      });
+    } else if (item.image_versions2?.candidates?.[0]?.url) {
+      itemUrls.push(item.image_versions2.candidates[0].url);
+    }
+
+    let matchedCount = 0;
+    const totalCount = itemUrls.length;
+
+    // Check every single slide image in order to collect the exact match counts
+    for (const srcUrl of itemUrls) {
+      try {
+        const instaProfile = await convertUrlToColorProfile(srcUrl);
+        if (localProfiles.some((p) => isProfileSimilar(p, instaProfile))) {
+          matchedCount++;
+        }
+      } catch (e) {
+        /* skip unreadable media candidates securely */
+      }
+    }
+
+    processingUrlsCache.delete(shortcode);
+    postMatchStatsCache.set(shortcode, { matchedCount, totalCount });
+
+    if (matchedCount > 0) {
+      totalMatchesFoundCounter++;
+    }
+
+    // Refresh layout view presentation elements concurrently
+    applyCachedOverlays();
+  }
+
+  // Finalize Execution Pipeline Context
+  chrome.storage.local.set({
+    [`scan_state_${tabId}`]: {
+      status: "complete",
+      matchesFound: totalMatchesFoundCounter,
+    },
+    [`is_scanning_active_${tabId}`]: false,
+  });
 }
 
 function applyCachedOverlays() {
   const postContainers = Array.from(
     document.querySelectorAll('a[href*="/p/"], a[href*="/reel/"]'),
-  ).filter((el) => !isInsideModal(el));
-
+  ).filter((el) => !el.closest('div[role="dialog"]'));
   postContainers.forEach((container) => {
-    const urlPath = container.getAttribute("href") || "";
-    const segments = urlPath.split("/").filter(Boolean);
-    const shortcode =
-      segments[1] === "p" || segments[1] === "reel" ? segments[2] : segments[1];
+    const shortcode = extractShortcode(container.getAttribute("href"));
     if (!shortcode) return;
 
-    if (matchedUrlsCache.has(shortcode)) {
-      updateOrCreateOverlay(container, "💾 MATCHED", "#0095f6");
-      container.classList.add("processed-by-ext");
-    } else if (unmatchedUrlsCache.has(shortcode)) {
-      updateOrCreateOverlay(container, "❌ NO MATCH", "rgba(38, 38, 38, 0.7)");
-      container.classList.add("processed-by-ext");
+    if (postMatchStatsCache.has(shortcode)) {
+      const { matchedCount, totalCount } = postMatchStatsCache.get(shortcode);
+      if (matchedCount > 0) {
+        updateOrCreateOverlay(container, "MATCHED", matchedCount, totalCount);
+        container.classList.add("processed-by-ext");
+      } else {
+        updateOrCreateOverlay(container, "NOMATCH", matchedCount, totalCount);
+        container.classList.add("processed-by-ext");
+      }
     } else if (processingUrlsCache.has(shortcode)) {
-      updateOrCreateOverlay(container, "🕒 PROCESSING...", "#e2a100");
+      updateOrCreateOverlay(container, "PROCESSING", 0, 0);
     }
   });
 }
 
 function convertUrlToColorProfile(url) {
   return new Promise((resolve, reject) => {
-    if (!url || typeof url !== "string") {
-      return reject(new Error("Invalid target image reference URL."));
-    }
-
     const img = new Image();
     img.crossOrigin = "Anonymous";
-
-    // FIXED: Appends a cache-busting timestamp parameter to bypass restrictive
-    // browser cache-serves, making sure declarative net rules append CORS successfully.
-    const separator = url.includes("?") ? "&" : "?";
-    img.src = `${url}${separator}ext_cb=${Date.now()}`;
-
+    img.src = `${url}${url.includes("?") ? "&" : "?"}ext_cb=${Date.now()}`;
     img.onload = () => {
       const canvas = document.createElement("canvas");
       canvas.width = 10;
@@ -367,96 +273,83 @@ function convertUrlToColorProfile(url) {
       const ctx = canvas.getContext("2d");
       if (ctx) {
         ctx.drawImage(img, 0, 0, 10, 10);
-        const imgData = ctx.getImageData(0, 0, 10, 10).data;
-        resolve(Array.from(imgData));
+        resolve(Array.from(ctx.getImageData(0, 0, 10, 10).data));
       } else {
-        reject(new Error("Canvas context extraction failure."));
+        reject(new Error("Canvas failure"));
       }
     };
-    img.onerror = (err) =>
-      reject(
-        new Error("Unable to parse asset destination target layout securely."),
-      );
+    img.onerror = (err) => reject(err);
   });
 }
 
 function isProfileSimilar(profile1, profile2) {
   if (profile1.length !== profile2.length) return false;
-  let totalDifference = 0;
+  let diff = 0;
   for (let i = 0; i < profile1.length; i++) {
     if ((i + 1) % 4 === 0) continue;
-    totalDifference += Math.abs(profile1[i] - profile2[i]);
+    diff += Math.abs(profile1[i] - profile2[i]);
   }
-  const averageChannelDifference = totalDifference / (profile1.length * 0.75);
-  return averageChannelDifference < 12;
+  return diff / (profile1.length * 0.75) < 12;
 }
 
-function updateOrCreateOverlay(containerElement, text, statusType) {
+function updateOrCreateOverlay(
+  containerElement,
+  statusType,
+  matchedCount,
+  totalCount,
+) {
   containerElement.style.position = "relative";
-
   const existingBadges =
     containerElement.querySelectorAll(".insta-match-badge");
-  let overlay = null;
+  let overlay = existingBadges.length > 0 ? existingBadges[0] : null;
 
-  if (existingBadges.length > 0) {
-    overlay = existingBadges[0];
-    for (let i = 1; i < existingBadges.length; i++) {
-      existingBadges[i].remove();
-    }
-  } else {
+  if (!overlay) {
     overlay = document.createElement("div");
     overlay.className = "insta-match-badge";
     containerElement.appendChild(overlay);
   }
 
-  let displayConfig = {
+  let config = {
     text: "⋯ Processing",
     bg: "rgba(255, 255, 255, 0.7)",
     border: "rgba(255, 255, 255, 0.4)",
     color: "#1d1d1f",
   };
-
-  if (text.includes("MATCHED")) {
-    displayConfig = {
-      text: "✓ Matched",
+  if (statusType === "MATCHED") {
+    config = {
+      text: `✓ Matched (${matchedCount}/${totalCount})`,
       bg: "rgba(52, 199, 89, 0.25)",
       border: "rgba(52, 199, 89, 0.4)",
       color: "#248a3d",
     };
-  } else if (text.includes("NO MATCH")) {
-    displayConfig = {
-      text: "✕ Unmatched",
+  } else if (statusType === "NOMATCH") {
+    config = {
+      text: `✕ Unmatched (0/${totalCount})`,
       bg: "rgba(255, 59, 48, 0.18)",
       border: "rgba(255, 59, 48, 0.35)",
       color: "#ff3b30",
     };
   }
 
-  if (overlay.innerText !== displayConfig.text) {
-    overlay.innerText = displayConfig.text;
-  }
+  if (overlay.innerText !== config.text) overlay.innerText = config.text;
 
   Object.assign(overlay.style, {
     position: "absolute",
     bottom: "10px",
     right: "10px",
-    backgroundColor: displayConfig.bg,
-    color: displayConfig.color,
-    border: `1px solid ${displayConfig.border}`,
+    backgroundColor: config.bg,
+    color: config.color,
+    border: `1px solid ${config.border}`,
     backdropFilter: "blur(16px) saturate(140%)",
     webkitBackdropFilter: "blur(16px) saturate(140%)",
     padding: "4px 10px",
     borderRadius: "20px",
-    fontFamily: "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif",
     fontSize: "11px",
     fontWeight: "600",
-    letterSpacing: "-0.1px",
-    boxShadow: "0 4px 12px rgba(0, 0, 0, 0.06)",
     zIndex: "99",
     pointerEvents: "none",
     display: "flex",
     alignItems: "center",
     gap: "4px",
-    transition: "all 0.3s cubic-bezier(0.25, 1, 0.5, 1)",
   });
 }
